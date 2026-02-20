@@ -8,41 +8,63 @@ public class NXEntryPoint
 {
     public static void Main(string[] args)
     {
-        var s = Session.GetSession();
+        Session s = Session.GetSession();
         s.ListingWindow.Open();
 
-        string root = @"D:\ZherlitsynEE\SaveFormatTest\Test\PRT"; // <-- папка с .prt
+        string root = @"D:\ZherlitsynEE\SaveFormatTest\Test\PRT"; // <-- поменяй на свою папку
+        var repo = new CacheRepository(@"D:\ZherlitsynEE\NxPrtAttributeScanner\cache\parts.db");
 
+        int processed = 0, skipped = 0, errors = 0;
         int count = 0;
+
         foreach (var prt in Directory.EnumerateFiles(root, "*.prt", SearchOption.AllDirectories))
         {
             count++;
 
+            var fi = new FileInfo(prt);
             string partNoFile = Path.GetFileNameWithoutExtension(prt);
+
+            if (!repo.NeedsExtraction(prt, fi.Length, fi.LastWriteTimeUtc))
+            {
+                skipped++;
+                continue;
+            }
 
             try
             {
                 var attrs = NxPartReader.ReadUserAttributesFromFile(s, prt);
 
-                string designation = attrs.TryGetValue("Обозначение", out var v) ? v : "";
+                string designation = "";
+                string v;
+                if (attrs.TryGetValue("Обозначение", out v)) designation = v;
+
                 string match = string.Equals(partNoFile, designation, StringComparison.OrdinalIgnoreCase) ? "OK" : "MISMATCH";
 
-                s.ListingWindow.WriteLine($"{count}. {partNoFile} | Обозначение={designation} | {match}");
+
+                repo.UpsertOk(prt, fi.Length, fi.LastWriteTimeUtc, partNoFile, designation, match, attrs);
+                processed++;
+
+                // опционально — иногда печатать прогресс
+                if (processed % 50 == 0)
+                    s.ListingWindow.WriteLine($"Progress: processed={processed}, skipped={skipped}, errors={errors}, total_seen={count}");
             }
             catch (Exception ex)
             {
-                s.ListingWindow.WriteLine($"{count}. {prt} | ERROR: {ex.Message}");
+                repo.UpsertError(prt, fi.Length, fi.LastWriteTimeUtc, partNoFile, ex.Message);
+                errors++;
             }
 
-            // Чтобы не улететь в бесконечность на тесте:
-            if (count >= 50) break;
+            // На первых тестах можно ограничить
+            // if (count >= 200) break;
         }
 
-        s.ListingWindow.WriteLine("Done.");
+        s.ListingWindow.WriteLine($"Done. processed={processed}, skipped={skipped}, errors={errors}, total_seen={count}");
     }
 
     public static int GetUnloadOption(string dummy)
-        => (int)Session.LibraryUnloadOption.Immediately;
+    {
+        return (int)Session.LibraryUnloadOption.Immediately;
+    }
 }
 
 public static class NxPartReader
