@@ -2,7 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using static NXOpen.NXObject;
+
 
 public class NXEntryPoint
 {
@@ -11,54 +11,82 @@ public class NXEntryPoint
         Session s = Session.GetSession();
         s.ListingWindow.Open();
 
-        string root = @"D:\ZherlitsynEE\SaveFormatTest\Test\PRT"; // <-- поменяй на свою папку
-        var repo = new CacheRepository(@"D:\ZherlitsynEE\NxPrtAttributeScanner\cache\parts.db");
-
-        int processed = 0, skipped = 0, errors = 0;
-        int count = 0;
-
-        foreach (var prt in Directory.EnumerateFiles(root, "*.prt", SearchOption.AllDirectories))
+        try
         {
-            count++;
+            s.ListingWindow.WriteLine("Start...");
 
-            var fi = new FileInfo(prt);
-            string partNoFile = Path.GetFileNameWithoutExtension(prt);
+            string root = @"D:\ZherlitsynEE\SaveFormatTest\Test\PRT";
+            var repo = new CacheRepository(@"D:\ZherlitsynEE\NxPrtAttributeScanner\cache\parts.db");
 
-            if (!repo.NeedsExtraction(prt, fi.Length, fi.LastWriteTimeUtc))
+            int processed = 0, skipped = 0, errors = 0;
+            int count = 0;
+
+            foreach (var prt in Directory.EnumerateFiles(root, "*.prt", SearchOption.AllDirectories))
             {
-                skipped++;
-                continue;
+                count++;
+
+                var fi = new FileInfo(prt);
+                string partNoFile = Path.GetFileNameWithoutExtension(prt);
+
+                if (!repo.NeedsExtraction(prt, fi.Length, fi.LastWriteTimeUtc))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                try
+                {
+                    var attrs = NxPartReader.ReadUserAttributesFromFile(s, prt);
+
+                    string designation = "";
+                    string v;
+                    if (attrs.TryGetValue("Обозначение", out v)) designation = v;
+
+                    string match = string.Equals(partNoFile, designation, StringComparison.OrdinalIgnoreCase) ? "OK" : "MISMATCH";
+
+                    repo.UpsertOk(prt, fi.Length, fi.LastWriteTimeUtc, partNoFile, designation, match, attrs);
+                    processed++;
+
+                    if (processed % 50 == 0)
+                        s.ListingWindow.WriteLine($"Progress: processed={processed}, skipped={skipped}, errors={errors}, total_seen={count}");
+                }
+                catch (Exception exOne)
+                {
+                    repo.UpsertError(prt, fi.Length, fi.LastWriteTimeUtc, partNoFile, exOne.Message);
+                    errors++;
+                }
             }
 
+            s.ListingWindow.WriteLine($"Scan done. processed={processed}, skipped={skipped}, errors={errors}, total_seen={count}");
+
+            // ===== Excel export =====
+            bool groupByFolderSheets = true;
+
+            s.ListingWindow.WriteLine("Loading data from DB...");
+            var attrNames = repo.GetAllAttributeNames();
+            var parts = repo.GetAllParts(root, groupByFolderSheets);
+
+            string outXlsx = @"D:\ZherlitsynEE\NxPrtAttributeScanner\reports\Parts.xlsx";
+            s.ListingWindow.WriteLine("Exporting Excel to: " + outXlsx);
+
+            ExcelExporter.Export(outXlsx, parts, attrNames, groupByFolderSheets);
+
+            s.ListingWindow.WriteLine("Excel saved: " + outXlsx);
+        }
+        catch (Exception ex)
+        {
+            // Главное: увидеть реальную причину
+            s.ListingWindow.WriteLine("FATAL ERROR:");
+            s.ListingWindow.WriteLine(ex.ToString());
+
+            // И на всякий случай в файл
             try
             {
-                var attrs = NxPartReader.ReadUserAttributesFromFile(s, prt);
-
-                string designation = "";
-                string v;
-                if (attrs.TryGetValue("Обозначение", out v)) designation = v;
-
-                string match = string.Equals(partNoFile, designation, StringComparison.OrdinalIgnoreCase) ? "OK" : "MISMATCH";
-
-
-                repo.UpsertOk(prt, fi.Length, fi.LastWriteTimeUtc, partNoFile, designation, match, attrs);
-                processed++;
-
-                // опционально — иногда печатать прогресс
-                if (processed % 50 == 0)
-                    s.ListingWindow.WriteLine($"Progress: processed={processed}, skipped={skipped}, errors={errors}, total_seen={count}");
+                File.WriteAllText(@"D:\ZherlitsynEE\NxPrtAttributeScanner\reports\last_error.txt", ex.ToString());
+                s.ListingWindow.WriteLine("Error log saved to last_error.txt");
             }
-            catch (Exception ex)
-            {
-                repo.UpsertError(prt, fi.Length, fi.LastWriteTimeUtc, partNoFile, ex.Message);
-                errors++;
-            }
-
-            // На первых тестах можно ограничить
-            // if (count >= 200) break;
+            catch { }
         }
-
-        s.ListingWindow.WriteLine($"Done. processed={processed}, skipped={skipped}, errors={errors}, total_seen={count}");
     }
 
     public static int GetUnloadOption(string dummy)
@@ -108,7 +136,7 @@ public static class NxPartReader
         }
     }
 
-    private static string AttributeToString(AttributeInformation a)
+    private static string AttributeToString(NXOpen.NXObject.AttributeInformation a)
     {
         switch (a.Type)
         {

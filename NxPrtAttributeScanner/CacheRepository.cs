@@ -2,6 +2,19 @@
 using System.Collections.Generic;
 using System.Data.SQLite;
 using System.IO;
+using System.Globalization;
+
+public sealed class PartRow
+{
+    public string FullPath;
+    public string PartNoFile;
+    public string Designation;
+    public string Match;
+    public string FolderSheetKey; // для группировки по листам
+    public DateTime LastWriteUtc;
+    public DateTime ExtractedUtc;
+    public Dictionary<string, string> Attrs;
+}
 
 public sealed class CacheRepository
 {
@@ -177,4 +190,144 @@ ON CONFLICT(full_path) DO UPDATE SET
             }
         }
     }
+    public List<string> GetAllAttributeNames()
+    {
+        var names = new List<string>();
+
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = @"
+SELECT DISTINCT attr_name
+FROM attributes
+ORDER BY attr_name;";
+                using (var r = cmd.ExecuteReader())
+                {
+                    while (r.Read())
+                        names.Add(r.GetString(0));
+                }
+            }
+        }
+
+        return names;
+    }
+
+    public List<PartRow> GetAllParts(string rootFolder, bool groupByFolderSheets)
+    {
+        // 1) читаем files
+        var parts = new List<PartRow>();
+        var byPath = new Dictionary<string, PartRow>(StringComparer.OrdinalIgnoreCase);
+
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = @"
+SELECT full_path, part_no_file, designation_attr, match, last_write_time_utc, extracted_at_utc
+FROM files
+WHERE status='OK'
+ORDER BY full_path;";
+                using (var r = cmd.ExecuteReader())
+                {
+                    while (r.Read())
+                    {
+                        var fullPath = r.GetString(0);
+
+                        var row = new PartRow
+                        {
+                            FullPath = fullPath,
+                            PartNoFile = r.GetString(1),
+                            Designation = r.IsDBNull(2) ? "" : r.GetString(2),
+                            Match = r.IsDBNull(3) ? "" : r.GetString(3),
+                            LastWriteUtc = ParseIsoUtc(r.GetString(4)),
+                            ExtractedUtc = ParseIsoUtc(r.GetString(5)),
+                            FolderSheetKey = groupByFolderSheets ? GetSheetKey(rootFolder, fullPath) : "ALL",
+                            Attrs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                        };
+
+                        parts.Add(row);
+                        byPath[fullPath] = row;
+                    }
+                }
+            }
+
+            // 2) читаем attributes одним проходом
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = @"
+SELECT full_path, attr_name, attr_value
+FROM attributes
+ORDER BY full_path, attr_name;";
+                using (var r = cmd.ExecuteReader())
+                {
+                    while (r.Read())
+                    {
+                        string p = r.GetString(0);
+                        PartRow row;
+                        if (!byPath.TryGetValue(p, out row)) continue;
+
+                        string name = r.GetString(1);
+                        string value = r.IsDBNull(2) ? "" : r.GetString(2);
+                        row.Attrs[name] = value;
+                    }
+                }
+            }
+        }
+
+        return parts;
+    }
+
+    private static DateTime ParseIsoUtc(string iso)
+    {
+        // Ты писал "O" при сохранении — это ISO 8601 round-trip
+        // Важно: считаем как UTC
+        return DateTime.Parse(iso, null, DateTimeStyles.RoundtripKind).ToUniversalTime();
+    }
+
+    // Для .NET Framework 4.7.2 нет Path.GetRelativePath → используем Uri
+    private static string GetSheetKey(string rootFolder, string fullPath)
+    {
+        try
+        {
+            string rel = GetRelativePathSafe(rootFolder, fullPath); // A\B\C\file.prt
+            if (string.IsNullOrEmpty(rel)) return "ROOT";
+
+            // берём первую папку относительно root
+            int idx = rel.IndexOf(Path.DirectorySeparatorChar);
+            if (idx < 0) return "ROOT";
+            string first = rel.Substring(0, idx);
+            return string.IsNullOrWhiteSpace(first) ? "ROOT" : first;
+        }
+        catch
+        {
+            return "ROOT";
+        }
+    }
+
+    private static string GetRelativePathSafe(string rootFolder, string fullPath)
+    {
+        if (string.IsNullOrEmpty(rootFolder) || string.IsNullOrEmpty(fullPath))
+            return "";
+
+        // гарантируем слэш в конце root
+        if (!rootFolder.EndsWith(Path.DirectorySeparatorChar.ToString()))
+            rootFolder += Path.DirectorySeparatorChar;
+
+        var rootUri = new Uri(rootFolder);
+        var fileUri = new Uri(fullPath);
+
+        if (rootUri.Scheme != fileUri.Scheme) return "";
+
+        var relUri = rootUri.MakeRelativeUri(fileUri);
+        string rel = Uri.UnescapeDataString(relUri.ToString());
+
+        // Uri даёт '/', приводим к '\'
+        rel = rel.Replace('/', Path.DirectorySeparatorChar);
+        return rel;
+    }
 }
+
