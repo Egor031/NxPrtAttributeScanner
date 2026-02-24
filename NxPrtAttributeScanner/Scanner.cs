@@ -30,7 +30,7 @@ public static class Scanner
                 continue;
 
             count++;
-
+            s.ListingWindow.WriteLine("Processing: " + prt);
             var fi = new FileInfo(prt);
             string partNoFile = Path.GetFileNameWithoutExtension(prt);
 

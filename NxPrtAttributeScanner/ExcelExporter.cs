@@ -72,7 +72,7 @@ public static class ExcelExporter
                 table.ShowFilter = true;
 
                 // Автоширина
-                ws.Cells[ws.Dimension.Address].AutoFitColumns();
+                ws.Cells[1, 1, lastRow, lastCol].AutoFitColumns();
             }
 
             // Сохранение

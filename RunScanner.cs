@@ -1,4 +1,4 @@
-// RunScanner.cs - tiny loader journal for run_journal.exe
+// RunScanner.cs - loader journal for run_journal.exe
 using System;
 using System.IO;
 using System.Reflection;
@@ -13,24 +13,31 @@ public class RunScanner
 
         try
         {
-            // 1) Где лежит DLL сканера?
-            // По умолчанию: рядом с этим .cs
-            string baseDir = Path.GetDirectoryName(System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName);
-            // baseDir тут будет папка NX, поэтому лучше определять по самому journal-файлу:
-            string journalPath = GetArgValue(args, "journalPath"); // опционально
-            string runDir = !string.IsNullOrWhiteSpace(journalPath)
-                ? Path.GetDirectoryName(journalPath)
-                : Directory.GetCurrentDirectory();
+            // 1) Определяем baseDir:
+            //    - если передан config=... -> папка конфига
+            //    - иначе journalPath=... -> папка journal
+            //    - иначе текущая директория
+            string baseDir = ResolveBaseDir(args);
 
-            // Можно передать scannerDll=... явно, если хочешь
+            // 2) Где лежит DLL сканера?
             string dllPath = GetArgValue(args, "scannerDll");
             if (string.IsNullOrWhiteSpace(dllPath))
-                dllPath = Path.Combine(runDir, "NxPrtAttributeScanner.dll");
+            {
+                dllPath = Path.Combine(baseDir, "NxPrtAttributeScanner.dll");
+            }
+            else
+            {
+                dllPath = Environment.ExpandEnvironmentVariables(dllPath);
+                if (!Path.IsPathRooted(dllPath))
+                    dllPath = Path.GetFullPath(Path.Combine(baseDir, dllPath));
+                else
+                    dllPath = Path.GetFullPath(dllPath);
+            }
 
             if (!File.Exists(dllPath))
                 throw new FileNotFoundException("Scanner DLL not found: " + dllPath);
 
-            // 2) Подгружаем сборку и вызываем HeadlessEntryPoint.Main(config=...)
+            // 3) Подгружаем сборку и вызываем HeadlessEntryPoint.Main(args)
             var asm = Assembly.LoadFrom(dllPath);
 
             var t = asm.GetType("HeadlessEntryPoint", throwOnError: true);
@@ -38,12 +45,10 @@ public class RunScanner
             if (m == null)
                 throw new MissingMethodException("HeadlessEntryPoint.Main not found in " + dllPath);
 
-            // Передаём args как есть (там будет config=... и т.п.)
             m.Invoke(null, new object[] { args });
         }
         catch (TargetInvocationException tie)
         {
-            // если внутри твоего кода упало исключение — покажем настоящее
             var ex = tie.InnerException ?? tie;
             s.ListingWindow.WriteLine("FATAL ERROR (inner):");
             s.ListingWindow.WriteLine(ex.ToString());
@@ -55,13 +60,41 @@ public class RunScanner
         }
     }
 
+    private static string ResolveBaseDir(string[] args)
+    {
+        // config=... (самый надёжный якорь)
+        string configPath = GetArgValue(args, "config");
+        if (!string.IsNullOrWhiteSpace(configPath))
+        {
+            configPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(configPath));
+            string dir = Path.GetDirectoryName(configPath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                return dir;
+        }
+
+        // journalPath=... (опционально)
+        string journalPath = GetArgValue(args, "journalPath");
+        if (!string.IsNullOrWhiteSpace(journalPath))
+        {
+            journalPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(journalPath));
+            string dir = Path.GetDirectoryName(journalPath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                return dir;
+        }
+
+        // fallback
+        return Directory.GetCurrentDirectory();
+    }
+
     private static string GetArgValue(string[] args, string key)
     {
         if (args == null) return null;
+
         for (int i = 0; i < args.Length; i++)
         {
             var a = args[i];
             if (string.IsNullOrWhiteSpace(a)) continue;
+
             int eq = a.IndexOf('=');
             if (eq <= 0) continue;
 
@@ -70,6 +103,7 @@ public class RunScanner
 
             return a.Substring(eq + 1).Trim().Trim('"');
         }
+
         return null;
     }
 

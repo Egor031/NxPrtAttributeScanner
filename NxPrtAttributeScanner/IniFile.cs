@@ -42,6 +42,16 @@ public sealed class IniFile
             string key = line.Substring(0, eq).Trim();
             string val = line.Substring(eq + 1).Trim();
 
+            // обрезаем inline-комментарии
+            int sc = val.IndexOf(';');
+            int hc = val.IndexOf('#');
+            int cut = -1;
+
+            if (sc >= 0) cut = sc;
+            if (hc >= 0) cut = (cut < 0) ? hc : Math.Min(cut, hc);
+
+            if (cut >= 0) val = val.Substring(0, cut).Trim();
+
             Dictionary<string, List<string>> sec;
             if (!_data.TryGetValue(section, out sec))
             {
@@ -78,7 +88,15 @@ public sealed class IniFile
 
     public bool GetBool01(string section, string key, bool defaultValue)
     {
-        string s = GetString(section, key, defaultValue ? "1" : "0");
-        return s == "1" || s.Equals("true", StringComparison.OrdinalIgnoreCase) || s.Equals("yes", StringComparison.OrdinalIgnoreCase);
+        string s = GetString(section, key, null);
+        if (string.IsNullOrWhiteSpace(s)) return defaultValue;
+
+        s = s.Trim();
+        if (s == "1" || s.Equals("true", StringComparison.OrdinalIgnoreCase) || s.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (s == "0" || s.Equals("false", StringComparison.OrdinalIgnoreCase) || s.Equals("no", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return defaultValue;
     }
 }

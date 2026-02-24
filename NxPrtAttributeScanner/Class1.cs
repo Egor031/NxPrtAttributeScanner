@@ -1,9 +1,7 @@
 ﻿using NXOpen;
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Runtime.CompilerServices;
-using static NXOpen.CAE.Post;
+
 
 
 public class NXEntryPoint
@@ -26,7 +24,7 @@ public class NXEntryPoint
             };
 
             // Пример фильтра
-            opt.IncludeFolderNames.Add("Кронштейны");
+            //opt.IncludeFolderNames.Add("Кронштейны");
             opt.Mode = RunMode.ScanAndExport;
             //opt.Mode = RunMode.ScanOnly;
 

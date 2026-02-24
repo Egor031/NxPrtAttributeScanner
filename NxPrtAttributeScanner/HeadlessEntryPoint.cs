@@ -9,11 +9,16 @@ public class HeadlessEntryPoint
         Session s = Session.GetSession();
         s.ListingWindow.Open();
 
+        string iniPath = null;
+
         try
         {
-            string iniPath = GetArgValue(args, "config");
+            iniPath = GetArgValue(args, "config");
             if (string.IsNullOrWhiteSpace(iniPath))
                 throw new Exception("Missing argument: config=<path_to_scan.ini>");
+
+            iniPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(iniPath));
+            s.ListingWindow.WriteLine("Config: " + iniPath);
 
             var opt = ScanOptionsLoader.LoadFromIni(iniPath);
             var repo = new CacheRepository(opt.DbPath);
@@ -31,7 +36,11 @@ public class HeadlessEntryPoint
 
             try
             {
-                File.WriteAllText(Path.Combine(Path.GetDirectoryName(typeof(HeadlessEntryPoint).Assembly.Location) ?? ".", "last_error.txt"), ex.ToString());
+                string baseDir = ".";
+                if (!string.IsNullOrWhiteSpace(iniPath))
+                    baseDir = Path.GetDirectoryName(iniPath) ?? ".";
+
+                File.WriteAllText(Path.Combine(baseDir, "last_error.txt"), ex.ToString());
             }
             catch { }
         }

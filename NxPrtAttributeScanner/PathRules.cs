@@ -26,7 +26,9 @@ public static class PathRules
 
             for (int j = 0; j < includeFolderNames.Count; j++)
             {
-                if (string.Equals(folder, includeFolderNames[j], StringComparison.OrdinalIgnoreCase))
+                var need = includeFolderNames[j];
+                if (!string.IsNullOrWhiteSpace(need) &&
+                    string.Equals(folder, need.Trim(), StringComparison.OrdinalIgnoreCase))
                     return true;
             }
         }
