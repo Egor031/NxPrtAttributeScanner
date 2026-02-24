@@ -72,16 +72,16 @@ public static class Scanner
 
         s.ListingWindow.WriteLine($"Scan done. processed={processed}, skipped={skipped}, errors={errors}, total_seen={count}");
 
-        // Диагностика (опционально)
-        if (firstProcessedPath != null)
-        {
-            s.ListingWindow.WriteLine("DIAG Compare NX vs DB for: " + firstProcessedPath);
+        //// Диагностика (опционально)
+        //if (firstProcessedPath != null)
+        //{
+        //    s.ListingWindow.WriteLine("DIAG Compare NX vs DB for: " + firstProcessedPath);
 
-            var nxAttrs = NxPartReader.ReadUserAttributesFromFile(s, firstProcessedPath);
-            var dbAttrs = repo.GetAttributesByPath(firstProcessedPath);
+        //    //var nxAttrs = NxPartReader.ReadUserAttributesFromFile(s, firstProcessedPath);
+        //    var dbAttrs = repo.GetAttributesByPath(firstProcessedPath);
 
-            s.ListingWindow.WriteLine($"NX attrs: {nxAttrs.Count}, DB attrs: {dbAttrs.Count}");
-        }
+        //    //s.ListingWindow.WriteLine($"NX attrs: {nxAttrs.Count}, DB attrs: {dbAttrs.Count}");
+        //}
 
         // ===== Export (optional) =====
         if (opt.Mode == RunMode.ScanOnly)
