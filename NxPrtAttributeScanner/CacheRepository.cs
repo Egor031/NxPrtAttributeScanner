@@ -170,8 +170,8 @@ VALUES($path,$name,$value);";
             using (var cmd = con.CreateCommand())
             {
                 cmd.CommandText = @"
-INSERT INTO files(full_path, file_size, last_write_time_utc, part_no_file, designation_attr, match, extracted_at_utc, attrs_json, status, error_message)
-VALUES($path,$size,$lw,$pn,'','',$ex,'','ERROR',$err)
+INSERT INTO files(full_path, file_size, last_write_time_utc, part_no_file, designation_attr, match, extracted_at_utc, status, error_message)
+VALUES($path,$size,$lw,$pn,'','',$ex,'ERROR',$err)
 ON CONFLICT(full_path) DO UPDATE SET
  file_size=excluded.file_size,
  last_write_time_utc=excluded.last_write_time_utc,
@@ -245,7 +245,7 @@ ORDER BY full_path;";
                             Match = r.IsDBNull(3) ? "" : r.GetString(3),
                             LastWriteUtc = ParseIsoUtc(r.GetString(4)),
                             ExtractedUtc = ParseIsoUtc(r.GetString(5)),
-                            FolderSheetKey = groupByFolderSheets ? GetSheetKey(rootFolder, fullPath) : "ALL",
+                            FolderSheetKey = "ALL",
                             Attrs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                         };
 

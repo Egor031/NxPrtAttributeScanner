@@ -7,6 +7,16 @@ public static class Scanner
 {
     public static void Run(Session s, ScanOptions opt, CacheRepository repo)
     {
+        if (string.IsNullOrWhiteSpace(opt.RootFolder) || !Directory.Exists(opt.RootFolder))
+            throw new Exception("Root folder not found: " + (opt.RootFolder ?? "<null>"));
+
+        if (opt.Mode == RunMode.ScanAndExport)
+        {
+            if (string.IsNullOrWhiteSpace(opt.ExcelOutputPath))
+                throw new Exception("ExcelOutputPath is empty.");
+            Directory.CreateDirectory(Path.GetDirectoryName(opt.ExcelOutputPath) ?? ".");
+        }
+
         s.ListingWindow.WriteLine("Start...");
 
         int processed = 0, skipped = 0, errors = 0;
