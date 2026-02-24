@@ -2,6 +2,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.CompilerServices;
+using static NXOpen.CAE.Post;
 
 
 public class NXEntryPoint
@@ -13,79 +15,30 @@ public class NXEntryPoint
 
         try
         {
-            s.ListingWindow.WriteLine("Start...");
-
             string root = @"D:\ZherlitsynEE\SaveFormatTest\Test\PRT";
-            var repo = new CacheRepository(@"D:\ZherlitsynEE\NxPrtAttributeScanner\cache\parts.db");
 
-            int processed = 0, skipped = 0, errors = 0;
-            int count = 0;
-
-            foreach (var prt in Directory.EnumerateFiles(root, "*.prt", SearchOption.AllDirectories))
+            var opt = new ScanOptions
             {
-                count++;
+                RootFolder = root,
+                GroupSheets = true,
+                GroupMode = SheetGroupingMode.FirstLevel,
+                ExcelOutputPath = @"D:\ZherlitsynEE\NxPrtAttributeScanner\reports\Parts.xlsx"
+            };
 
-                var fi = new FileInfo(prt);
-                string partNoFile = Path.GetFileNameWithoutExtension(prt);
+            // Пример фильтра
+            opt.IncludeFolderNames.Add("Кронштейны");
+            opt.Mode = RunMode.ScanAndExport;
+            //opt.Mode = RunMode.ScanOnly;
 
-                if (!repo.NeedsExtraction(prt, fi.Length, fi.LastWriteTimeUtc))
-                {
-                    skipped++;
-                    continue;
-                }
+            var repo = new CacheRepository(
+                @"D:\ZherlitsynEE\NxPrtAttributeScanner\cache\parts.db");
 
-                try
-                {
-                    var attrs = NxPartReader.ReadUserAttributesFromFile(s, prt);
-
-                    string designation = "";
-                    string v;
-                    if (attrs.TryGetValue("Обозначение", out v)) designation = v;
-
-                    string match = string.Equals(partNoFile, designation, StringComparison.OrdinalIgnoreCase) ? "OK" : "MISMATCH";
-
-                    repo.UpsertOk(prt, fi.Length, fi.LastWriteTimeUtc, partNoFile, designation, match, attrs);
-                    processed++;
-
-                    if (processed % 50 == 0)
-                        s.ListingWindow.WriteLine($"Progress: processed={processed}, skipped={skipped}, errors={errors}, total_seen={count}");
-                }
-                catch (Exception exOne)
-                {
-                    repo.UpsertError(prt, fi.Length, fi.LastWriteTimeUtc, partNoFile, exOne.Message);
-                    errors++;
-                }
-            }
-
-            s.ListingWindow.WriteLine($"Scan done. processed={processed}, skipped={skipped}, errors={errors}, total_seen={count}");
-
-            // ===== Excel export =====
-            bool groupByFolderSheets = true;
-
-            s.ListingWindow.WriteLine("Loading data from DB...");
-            var attrNames = repo.GetAllAttributeNames();
-            var parts = repo.GetAllParts(root, groupByFolderSheets);
-
-            string outXlsx = @"D:\ZherlitsynEE\NxPrtAttributeScanner\reports\Parts.xlsx";
-            s.ListingWindow.WriteLine("Exporting Excel to: " + outXlsx);
-
-            ExcelExporter.Export(outXlsx, parts, attrNames, groupByFolderSheets);
-
-            s.ListingWindow.WriteLine("Excel saved: " + outXlsx);
+            Scanner.Run(s, opt, repo);
         }
         catch (Exception ex)
         {
-            // Главное: увидеть реальную причину
             s.ListingWindow.WriteLine("FATAL ERROR:");
             s.ListingWindow.WriteLine(ex.ToString());
-
-            // И на всякий случай в файл
-            try
-            {
-                File.WriteAllText(@"D:\ZherlitsynEE\NxPrtAttributeScanner\reports\last_error.txt", ex.ToString());
-                s.ListingWindow.WriteLine("Error log saved to last_error.txt");
-            }
-            catch { }
         }
     }
 

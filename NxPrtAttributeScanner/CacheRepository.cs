@@ -329,5 +329,36 @@ ORDER BY full_path, attr_name;";
         rel = rel.Replace('/', Path.DirectorySeparatorChar);
         return rel;
     }
+
+    public Dictionary<string, string> GetAttributesByPath(string fullPath)
+    {
+        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        using (var con = new System.Data.SQLite.SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = @"
+SELECT attr_name, attr_value
+FROM attributes
+WHERE full_path = $p
+ORDER BY attr_name;";
+                cmd.Parameters.AddWithValue("$p", fullPath);
+
+                using (var r = cmd.ExecuteReader())
+                {
+                    while (r.Read())
+                    {
+                        var name = r.GetString(0);
+                        var val = r.IsDBNull(1) ? "" : r.GetString(1);
+                        dict[name] = val;
+                    }
+                }
+            }
+        }
+
+        return dict;
+    }
 }
 
