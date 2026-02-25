@@ -360,5 +360,54 @@ ORDER BY attr_name;";
 
         return dict;
     }
+
+    public void RemoveNotSeen(HashSet<string> seen)
+    {
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var tx = con.BeginTransaction())
+            {
+                using (var cmd = con.CreateCommand())
+                {
+                    cmd.Transaction = tx;
+
+                    cmd.CommandText = "SELECT full_path FROM files;";
+                    var toDelete = new List<string>();
+
+                    using (var r = cmd.ExecuteReader())
+                    {
+                        while (r.Read())
+                        {
+                            string p = r.GetString(0);
+                            if (!seen.Contains(p))
+                                toDelete.Add(p);
+                        }
+                    }
+
+                    foreach (var p in toDelete)
+                    {
+                        using (var del1 = con.CreateCommand())
+                        {
+                            del1.Transaction = tx;
+                            del1.CommandText = "DELETE FROM attributes WHERE full_path=$p;";
+                            del1.Parameters.AddWithValue("$p", p);
+                            del1.ExecuteNonQuery();
+                        }
+
+                        using (var del2 = con.CreateCommand())
+                        {
+                            del2.Transaction = tx;
+                            del2.CommandText = "DELETE FROM files WHERE full_path=$p;";
+                            del2.Parameters.AddWithValue("$p", p);
+                            del2.ExecuteNonQuery();
+                        }
+                    }
+                }
+
+                tx.Commit();
+            }
+        }
+    }
 }
 

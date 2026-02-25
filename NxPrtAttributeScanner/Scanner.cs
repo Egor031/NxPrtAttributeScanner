@@ -22,6 +22,7 @@ public static class Scanner
         int processed = 0, skipped = 0, errors = 0;
         int count = 0;
         string firstProcessedPath = null;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var prt in Directory.EnumerateFiles(opt.RootFolder, "*.prt", SearchOption.AllDirectories))
         {
@@ -30,6 +31,7 @@ public static class Scanner
                 continue;
 
             count++;
+            seen.Add(prt);
             s.ListingWindow.WriteLine("Processing: " + prt);
             var fi = new FileInfo(prt);
             string partNoFile = Path.GetFileNameWithoutExtension(prt);
@@ -68,8 +70,16 @@ public static class Scanner
                 repo.UpsertError(prt, fi.Length, fi.LastWriteTimeUtc, partNoFile, exOne.Message);
                 errors++;
             }
+            
         }
-
+        if (seen.Count > 0)
+        {
+            repo.RemoveNotSeen(seen);
+        }
+        else
+        {
+            s.ListingWindow.WriteLine("Внимание: не найдено ни одного файла по текущим фильтрам. База не очищалась.");
+        }
         s.ListingWindow.WriteLine($"Scan done. processed={processed}, skipped={skipped}, errors={errors}, total_seen={count}");
 
         //// Диагностика (опционально)
@@ -106,7 +116,13 @@ public static class Scanner
         }
 
         s.ListingWindow.WriteLine("Exporting Excel...");
+        if (parts.Count == 0)
+        {
+            s.ListingWindow.WriteLine("Нет данных для выгрузки в Excel (после фильтров). Excel не создан.");
+            return;
+        }
         ExcelExporter.Export(opt.ExcelOutputPath, parts, attrNames, opt.GroupSheets);
         s.ListingWindow.WriteLine("Excel saved: " + opt.ExcelOutputPath);
     }
 }
+
