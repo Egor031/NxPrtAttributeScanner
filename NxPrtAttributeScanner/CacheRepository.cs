@@ -216,35 +216,48 @@ ORDER BY attr_name;";
 
     public List<PartRow> GetAllParts(string rootFolder, bool groupByFolderSheets)
     {
-        // 1) читаем files
         var parts = new List<PartRow>();
         var byPath = new Dictionary<string, PartRow>(StringComparer.OrdinalIgnoreCase);
+
+        string rootLike = NormalizeRootForLike(rootFolder) + "%";
 
         using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
         {
             con.Open();
 
+            // 1) files: 1 строка = 1 файл
             using (var cmd = con.CreateCommand())
             {
                 cmd.CommandText = @"
 SELECT full_path, part_no_file, designation_attr, match, last_write_time_utc, extracted_at_utc
 FROM files
 WHERE status='OK'
+  AND full_path LIKE $root
 ORDER BY full_path;";
+                cmd.Parameters.AddWithValue("$root", rootLike);
+
                 using (var r = cmd.ExecuteReader())
                 {
+                    int iFullPath = r.GetOrdinal("full_path");
+                    int iPartNo = r.GetOrdinal("part_no_file");
+                    int iDesig = r.GetOrdinal("designation_attr");
+                    int iMatch = r.GetOrdinal("match");
+                    int iLastWrite = r.GetOrdinal("last_write_time_utc");
+                    int iExtracted = r.GetOrdinal("extracted_at_utc");
+
                     while (r.Read())
                     {
-                        var fullPath = r.GetString(0);
+                        string fullPath = r.IsDBNull(iFullPath) ? "" : r.GetString(iFullPath);
+                        if (string.IsNullOrEmpty(fullPath)) continue;
 
                         var row = new PartRow
                         {
                             FullPath = fullPath,
-                            PartNoFile = r.GetString(1),
-                            Designation = r.IsDBNull(2) ? "" : r.GetString(2),
-                            Match = r.IsDBNull(3) ? "" : r.GetString(3),
-                            LastWriteUtc = ParseIsoUtc(r.GetString(4)),
-                            ExtractedUtc = ParseIsoUtc(r.GetString(5)),
+                            PartNoFile = r.IsDBNull(iPartNo) ? "" : r.GetString(iPartNo),
+                            Designation = r.IsDBNull(iDesig) ? "" : r.GetString(iDesig),
+                            Match = r.IsDBNull(iMatch) ? "" : r.GetString(iMatch),
+                            LastWriteUtc = ParseIsoUtc(r.IsDBNull(iLastWrite) ? "" : r.GetString(iLastWrite)),
+                            ExtractedUtc = ParseIsoUtc(r.IsDBNull(iExtracted) ? "" : r.GetString(iExtracted)),
                             FolderSheetKey = "ALL",
                             Attrs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                         };
@@ -255,24 +268,35 @@ ORDER BY full_path;";
                 }
             }
 
-            // 2) читаем attributes одним проходом
+            // 2) attributes: подгружаем только для файлов из root и OK
             using (var cmd = con.CreateCommand())
             {
                 cmd.CommandText = @"
-SELECT full_path, attr_name, attr_value
-FROM attributes
-ORDER BY full_path, attr_name;";
+SELECT a.full_path, a.attr_name, a.attr_value
+FROM attributes a
+JOIN files f ON f.full_path = a.full_path
+WHERE f.status='OK'
+  AND f.full_path LIKE $root
+ORDER BY a.full_path, a.attr_name;";
+                cmd.Parameters.AddWithValue("$root", rootLike);
+
                 using (var r = cmd.ExecuteReader())
                 {
+                    int iPath = r.GetOrdinal("full_path");
+                    int iName = r.GetOrdinal("attr_name");
+                    int iVal = r.GetOrdinal("attr_value");
+
                     while (r.Read())
                     {
-                        string p = r.GetString(0);
+                        string p = r.IsDBNull(iPath) ? "" : r.GetString(iPath);
                         PartRow row;
                         if (!byPath.TryGetValue(p, out row)) continue;
 
-                        string name = r.GetString(1);
-                        string value = r.IsDBNull(2) ? "" : r.GetString(2);
-                        row.Attrs[name] = value;
+                        string name = r.IsDBNull(iName) ? "" : r.GetString(iName);
+                        if (string.IsNullOrEmpty(name)) continue;
+
+                        string value = r.IsDBNull(iVal) ? "" : r.GetString(iVal);
+                        row.Attrs[name] = value ?? "";
                     }
                 }
             }
@@ -282,10 +306,23 @@ ORDER BY full_path, attr_name;";
     }
 
     private static DateTime ParseIsoUtc(string iso)
+{
+    if (string.IsNullOrWhiteSpace(iso))
+        return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
+
+    return DateTime.Parse(iso, null, DateTimeStyles.RoundtripKind).ToUniversalTime();
+}
+
+    private static string NormalizeRootForLike(string rootFolder)
     {
-        // Ты писал "O" при сохранении — это ISO 8601 round-trip
-        // Важно: считаем как UTC
-        return DateTime.Parse(iso, null, DateTimeStyles.RoundtripKind).ToUniversalTime();
+        if (string.IsNullOrEmpty(rootFolder)) return "";
+        string root = rootFolder;
+
+        // чтобы D:\Root2 не матчился под D:\Root
+        if (!root.EndsWith(Path.DirectorySeparatorChar.ToString()))
+            root += Path.DirectorySeparatorChar;
+
+        return root;
     }
 
     // Для .NET Framework 4.7.2 нет Path.GetRelativePath → используем Uri
@@ -361,19 +398,25 @@ ORDER BY attr_name;";
         return dict;
     }
 
-    public void RemoveNotSeen(HashSet<string> seen)
+    public void RemoveNotSeenUnderRoot(string rootFolder, HashSet<string> seen)
     {
+        string rootLike = NormalizeRootForLike(rootFolder) + "%";
+
         using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
         {
             con.Open();
             using (var tx = con.BeginTransaction())
             {
+                var toDelete = new List<string>();
+
                 using (var cmd = con.CreateCommand())
                 {
                     cmd.Transaction = tx;
-
-                    cmd.CommandText = "SELECT full_path FROM files;";
-                    var toDelete = new List<string>();
+                    cmd.CommandText = @"
+SELECT full_path
+FROM files
+WHERE full_path LIKE $root;";
+                    cmd.Parameters.AddWithValue("$root", rootLike);
 
                     using (var r = cmd.ExecuteReader())
                     {
@@ -384,24 +427,24 @@ ORDER BY attr_name;";
                                 toDelete.Add(p);
                         }
                     }
+                }
 
-                    foreach (var p in toDelete)
+                foreach (var p in toDelete)
+                {
+                    using (var del1 = con.CreateCommand())
                     {
-                        using (var del1 = con.CreateCommand())
-                        {
-                            del1.Transaction = tx;
-                            del1.CommandText = "DELETE FROM attributes WHERE full_path=$p;";
-                            del1.Parameters.AddWithValue("$p", p);
-                            del1.ExecuteNonQuery();
-                        }
+                        del1.Transaction = tx;
+                        del1.CommandText = "DELETE FROM attributes WHERE full_path=$p;";
+                        del1.Parameters.AddWithValue("$p", p);
+                        del1.ExecuteNonQuery();
+                    }
 
-                        using (var del2 = con.CreateCommand())
-                        {
-                            del2.Transaction = tx;
-                            del2.CommandText = "DELETE FROM files WHERE full_path=$p;";
-                            del2.Parameters.AddWithValue("$p", p);
-                            del2.ExecuteNonQuery();
-                        }
+                    using (var del2 = con.CreateCommand())
+                    {
+                        del2.Transaction = tx;
+                        del2.CommandText = "DELETE FROM files WHERE full_path=$p;";
+                        del2.Parameters.AddWithValue("$p", p);
+                        del2.ExecuteNonQuery();
                     }
                 }
 

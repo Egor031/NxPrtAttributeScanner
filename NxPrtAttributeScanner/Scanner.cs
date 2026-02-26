@@ -26,15 +26,20 @@ public static class Scanner
 
         foreach (var prt in Directory.EnumerateFiles(opt.RootFolder, "*.prt", SearchOption.AllDirectories))
         {
+            seen.Add(prt);
             // Фильтр по папкам
             if (!PathRules.PassesFolderFilter(prt, opt.IncludeFolderNames))
                 continue;
 
             count++;
-            seen.Add(prt);
-            s.ListingWindow.WriteLine("Processing: " + prt);
+            var t0 = DateTime.Now;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            s.ListingWindow.WriteLine($"[{t0:HH:mm:ss}] Processing: {prt}");
             var fi = new FileInfo(prt);
             string partNoFile = Path.GetFileNameWithoutExtension(prt);
+
+            
 
             if (!repo.NeedsExtraction(prt, fi.Length, fi.LastWriteTimeUtc))
             {
@@ -74,7 +79,7 @@ public static class Scanner
         }
         if (seen.Count > 0)
         {
-            repo.RemoveNotSeen(seen);
+            repo.RemoveNotSeenUnderRoot(opt.RootFolder, seen);
         }
         else
         {
