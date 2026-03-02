@@ -43,19 +43,36 @@ public class MainForm : Form
     {
         Padding = new Padding(10);
 
-        // ===== Split: сверху настройки, снизу лог =====
+        // ===== Split: сверху настройки+кнопки, снизу лог =====
         var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Horizontal,
-            SplitterDistance = 280, // стартовая высота панели настроек
-            Panel1MinSize = 220,
+            FixedPanel = FixedPanel.Panel1,
+            IsSplitterFixed = false,
+            Panel1MinSize = 260,
             Panel2MinSize = 150
         };
+
         Controls.Add(split);
-        split.FixedPanel = FixedPanel.Panel1;      // верх фиксированный
-        split.IsSplitterFixed = false;             // но пользователь может двигать
-        split.SplitterDistance = 230;              // поменьше, чтобы лог был больше
+
+        // Чтобы по умолчанию лог был больше
+        split.FixedPanel = FixedPanel.Panel1;
+        split.IsSplitterFixed = false;
+        split.SplitterDistance = 300;
+
+        // ===== Верхняя панель: 2 строки (настройки + кнопки) =====
+        var topLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(0)
+        };
+        topLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f)); // настройки
+        topLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));     // кнопки
+
+        split.Panel1.Controls.Add(topLayout);
 
         // ===== Таблица настроек =====
         var grid = new TableLayoutPanel
@@ -63,9 +80,8 @@ public class MainForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 3,
             RowCount = 0,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Padding = new Padding(0),
+            AutoSize = false,
+            Padding = new Padding(0)
         };
 
         // Колонки: Label | Input | Button
@@ -73,13 +89,7 @@ public class MainForm : Form
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-        // Контейнер верхней панели: настройки (Fill) + кнопки (Bottom)
-        var panelTop = new Panel { Dock = DockStyle.Fill };
-        split.Panel1.Controls.Add(panelTop);
-
-        // Внутри него: grid с настройками
-        panelTop.Controls.Add(grid);
-        grid.Dock = DockStyle.Fill;
+        topLayout.Controls.Add(grid, 0, 0);
 
         // ===== Row: NX =====
         tbNxBaseDir = new TextBox { Dock = DockStyle.Fill };
@@ -99,8 +109,7 @@ public class MainForm : Form
         btnPickExcel.Click += (s, e) => PickExcelOut();
         AddRow(grid, "Файл Excel (Out):", tbExcelOut, btnPickExcel);
 
-        // ===== Row: GroupSheets + GroupMode + Mode (в одной строке) =====
-        // ===== Row: Параметры (2 строки, без чекбокса) =====
+        // ===== Параметры (2 строки, без чекбокса) =====
         var paramsGrid = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -110,15 +119,11 @@ public class MainForm : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Margin = new Padding(0)
         };
-
-        // 2 колонки: Label (Auto) | Combo (Percent)
         paramsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         paramsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-
         paramsGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         paramsGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        // --- Строка 1: Группировка ---
         var lblGroup = new Label
         {
             Text = "Группировка:",
@@ -140,7 +145,6 @@ public class MainForm : Form
         paramsGrid.Controls.Add(lblGroup, 0, 0);
         paramsGrid.Controls.Add(cmbGroupMode, 1, 0);
 
-        // --- Строка 2: Режим ---
         var lblMode = new Label
         {
             Text = "Режим:",
@@ -164,37 +168,27 @@ public class MainForm : Form
 
         AddRow(grid, "Параметры:", paramsGrid, null);
 
-        // ===== Row: Filters label + multiline textbox =====
-        // Лейбл сверху
+        // ===== Фильтры: делаем строку растягиваемой =====
+        // 1) строка-лейбл (обычная)
+        AddRow(grid, "Фильтр папок (каждая с новой строки или через ;):", new Panel { Height = 1 }, null);
 
-
+        // 2) строка-текстбокс (растягивается)
         tbFilters = new TextBox
         {
             Dock = DockStyle.Fill,
             Multiline = true,
             ScrollBars = ScrollBars.Vertical,
-            Height = 70 // высота стартовая, но при растягивании Panel1 она будет расти
+            MinimumSize = new System.Drawing.Size(0, 70)
         };
+        AddRow(grid, "", tbFilters, null, makeRowFill: true);
 
-        // Важно: чтобы multiline-поле могло растягиваться по высоте,
-        // делаем последнюю строку "процентной"
-        tbFilters.MinimumSize = new System.Drawing.Size(0, 70);
-        tbFilters.Height = 70;
-        AddRow(grid, "Фильтр папок (каждая с новой строки или через ;):", tbFilters, null);
-        // ===== Row: Buttons + Status =====
-        var buttonsPanel = new Panel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 40,
-            Padding = new Padding(0, 6, 0, 0)
-        };
-        panelTop.Controls.Add(buttonsPanel);
-
+        // ===== Нижняя панель с кнопками (в отдельной строке topLayout) =====
         var bottomBar = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            AutoSize = true
+            AutoSize = true,
+            Padding = new Padding(0, 6, 0, 0)
         };
         bottomBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         bottomBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -218,9 +212,9 @@ public class MainForm : Form
         bottomBar.Controls.Add(btnStop, 1, 0);
         bottomBar.Controls.Add(lblStatus, 2, 0);
 
-        buttonsPanel.Controls.Add(bottomBar);
+        topLayout.Controls.Add(bottomBar, 0, 1);
 
-        // ===== Log (нижняя панель) =====
+        // ===== Log (нижняя панель split) =====
         tbLog = new RichTextBox
         {
             Dock = DockStyle.Fill,
