@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="NxPrtAttributeScanner/NxPrtAttributeScanner.csproj" Id="e6927430-91b9-421e-b71e-6c1b32ec9d7e" />
+  <Project Path="NxPrtAttributeScannerGUI/NxPrtAttributeScannerGUI.csproj" Id="4113aa40-0cda-4eed-8563-f35198643c52" />
 </Solution>
