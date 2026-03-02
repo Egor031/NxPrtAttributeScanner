@@ -1,36 +1,49 @@
-﻿using NXOpen;
+﻿// Demo entrypoint для запуска прямо из NX (не для production)
+// Настройки берутся из аргументов или из scan.ini рядом с dll.
+
+using NXOpen;
 using System;
 using System.Collections.Generic;
-
-
+using System.IO;
 
 public class NXEntryPoint
 {
     public static void Main(string[] args)
     {
-        Session s = Session.GetSession();
+        var s = Session.GetSession();
         s.ListingWindow.Open();
 
         try
         {
-            string root = @"D:\ZherlitsynEE\SaveFormatTest\Test\PRT";
+            // 1) Если передан config=... — используем ini
+            string ini = GetArgValue(args, "config");
+            ScanOptions opt;
 
-            var opt = new ScanOptions
+            if (!string.IsNullOrWhiteSpace(ini))
             {
-                RootFolder = root,
-                GroupSheets = true,
-                GroupMode = SheetGroupingMode.FirstLevel,
-                ExcelOutputPath = @"D:\ZherlitsynEE\NxPrtAttributeScanner\reports\Parts.xlsx"
-            };
+                ini = Path.GetFullPath(Environment.ExpandEnvironmentVariables(ini));
+                opt = ScanOptionsLoader.LoadFromIni(ini);
+            }
+            else
+            {
+                // 2) Иначе — минимальные дефолты относительно папки программы
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
 
-            // Пример фильтра
-            //opt.IncludeFolderNames.Add("Кронштейны");
-            opt.Mode = RunMode.ScanAndExport;
-            //opt.Mode = RunMode.ScanOnly;
+                opt = new ScanOptions
+                {
+                    RootFolder = GetArgValue(args, "root") ?? "",
+                    ExcelOutputPath = Path.Combine(baseDir, "reports", "Parts.xlsx"),
+                    Mode = RunMode.ScanAndExport,
+                    GroupMode = SheetGroupingMode.FirstLevel,
+                    GroupSheets = true,
+                    DbPath = Path.Combine(baseDir, "cache", "parts.db"),
+                };
 
-            var repo = new CacheRepository(
-                @"D:\ZherlitsynEE\NxPrtAttributeScanner\cache\parts.db");
+                if (string.IsNullOrWhiteSpace(opt.RootFolder))
+                    throw new Exception("Не задан root. Передай аргумент root=<папка> или config=<scan.ini>");
+            }
 
+            var repo = new CacheRepository(opt.DbPath);
             Scanner.Run(s, opt, repo);
         }
         catch (Exception ex)
@@ -40,63 +53,21 @@ public class NXEntryPoint
         }
     }
 
+    private static string GetArgValue(string[] args, string key)
+    {
+        if (args == null) return null;
+        foreach (var a in args)
+        {
+            if (string.IsNullOrWhiteSpace(a)) continue;
+            int eq = a.IndexOf('=');
+            if (eq <= 0) continue;
+            var k = a.Substring(0, eq).Trim();
+            if (!k.Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
+            return a.Substring(eq + 1).Trim().Trim('"');
+        }
+        return null;
+    }
+
     public static int GetUnloadOption(string dummy)
-    {
-        return (int)Session.LibraryUnloadOption.Immediately;
-    }
-}
-
-public static class NxPartReader
-{
-    public static Dictionary<string, string> ReadUserAttributesFromFile(Session s, string prtPath)
-    {
-        BasePart basePart = null;
-        PartLoadStatus pls = null;
-
-        try
-        {
-            basePart = s.Parts.OpenBaseDisplay(prtPath, out pls);
-
-            var part = basePart as Part;
-            if (part == null)
-                throw new Exception("Открытый файл не является Part.");
-
-            var dict = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
-
-            var attrs = part.GetUserAttributes();
-            foreach (var a in attrs)
-            {
-                var title = (a.Title ?? "").Trim();
-                if (title.Length == 0) continue;
-
-                dict[title] = AttributeToString(a);
-            }
-
-            return dict;
-        }
-        finally
-        {
-            try { pls?.Dispose(); } catch { }
-
-            try
-            {
-                if (basePart != null)
-                    basePart.Close(BasePart.CloseWholeTree.False, BasePart.CloseModified.CloseModified, null);
-            }
-            catch { }
-        }
-    }
-
-    private static string AttributeToString(NXOpen.NXObject.AttributeInformation a)
-    {
-        switch (a.Type)
-        {
-            case NXObject.AttributeType.String: return a.StringValue ?? "";
-            case NXObject.AttributeType.Integer: return a.IntegerValue.ToString();
-            case NXObject.AttributeType.Real: return a.RealValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            case NXObject.AttributeType.Boolean: return a.BooleanValue ? "true" : "false";
-            case NXObject.AttributeType.Time: return a.TimeValue ?? "";
-            default: return "";
-        }
-    }
+        => (int)Session.LibraryUnloadOption.Immediately;
 }
