@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -168,7 +169,14 @@ public class MainForm : Form
             // НЕ ставим Panel1MinSize/Panel2MinSize здесь
         };
 
-        tvFolders = new TreeView { Dock = DockStyle.Fill };
+        tvFolders = new TreeView
+        {
+            Dock = DockStyle.Fill,
+            CheckBoxes = true
+        };
+
+        tvFolders.BeforeExpand += (s, e) => ExpandFolderNode(e.Node);
+        tvFolders.AfterCheck += TvFolders_AfterCheck;
         tvFolders.NodeMouseDoubleClick += (s, e) =>
         {
             if (e.Node != null)
@@ -191,6 +199,7 @@ public class MainForm : Form
 
         lbSheets = new ListBox { Dock = DockStyle.Fill };
         lbSheets.SelectedIndexChanged += (s, e) => OnSheetSelected();
+        SyncTreeChecks();
         right.Controls.Add(lbSheets, 0, 0);
 
         lbSheetFolders = new ListBox { Dock = DockStyle.Fill };
@@ -743,7 +752,9 @@ public class MainForm : Form
                 }
             }
             catch { /* на сетевых дисках/правах может падать — игнор */ }
+            SyncTreeChecks();
         }
+        
     }
 
     // ===== Sheets UI =====
@@ -783,6 +794,7 @@ public class MainForm : Form
 
         foreach (var f in sInfo.Folders)
             lbSheetFolders.Items.Add(f.RelPath + (f.IncludeSubfolders ? "  (включая подпапки)" : ""));
+        SyncTreeChecks();
     }
 
     void AddSheet()
@@ -861,6 +873,7 @@ public class MainForm : Form
 
         _repo.RemoveFolderFromSheet(_selectedSheetId, rel);
         OnSheetSelected();
+        SyncTreeChecks();
     }
 
     static string MakeRel(string root, string abs)
@@ -938,5 +951,88 @@ public class MainForm : Form
         if (v > max) v = max;
 
         try { split.SplitterDistance = v; } catch { }
+    }
+
+    void TvFolders_AfterCheck(object sender, TreeViewEventArgs e)
+    {
+        if (_repo == null) return;
+        if (_selectedSheetId <= 0) return;
+        if (e.Node.Tag == null) return;
+
+        // чтобы не ловить рекурсивные события
+        tvFolders.AfterCheck -= TvFolders_AfterCheck;
+
+        try
+        {
+            string root = tbRoot.Text.Trim();
+            string abs = e.Node.Tag as string;
+
+            string rel = MakeRel(root, abs);
+            if (rel == null) return;
+
+            if (e.Node.Checked)
+            {
+                _repo.AddFolderToSheet(_selectedSheetId, rel, true);
+            }
+            else
+            {
+                _repo.RemoveFolderFromSheet(_selectedSheetId, rel);
+            }
+
+            // применяем состояние к подпапкам
+            SetChildrenChecked(e.Node, e.Node.Checked);
+
+            OnSheetSelected();
+            SyncTreeChecks();
+        }
+        finally
+        {
+            tvFolders.AfterCheck += TvFolders_AfterCheck;
+        }
+    }
+
+    void SetChildrenChecked(TreeNode node, bool state)
+    {
+        foreach (TreeNode child in node.Nodes)
+        {
+            child.Checked = state;
+            SetChildrenChecked(child, state);
+        }
+    }
+
+    void SyncTreeChecks()
+    {
+        if (_repo == null) return;
+
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (_selectedSheetId > 0)
+        {
+            var sheets = _repo.GetSheetsWithFolders();
+            var sInfo = sheets.Find(x => x.Id == _selectedSheetId);
+
+            if (sInfo != null)
+                foreach (var f in sInfo.Folders)
+                    set.Add(f.RelPath);
+        }
+
+        SyncNode(tvFolders.Nodes, set);
+    }
+
+    void SyncNode(TreeNodeCollection nodes, HashSet<string> set)
+    {
+        foreach (TreeNode node in nodes)
+        {
+            string abs = node.Tag as string;
+
+            if (!string.IsNullOrEmpty(abs))
+            {
+                string rel = MakeRel(tbRoot.Text.Trim(), abs);
+                node.Checked = rel != null && set.Contains(rel);
+            }
+
+            if (node.Nodes.Count > 0)
+                SyncNode(node.Nodes, set);
+        }
     }
 }
