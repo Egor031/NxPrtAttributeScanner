@@ -395,12 +395,27 @@ public class MainForm : Form
             return;
         }
 
+        string dbPath = (tbDbPath.Text ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(dbPath))
+        {
+            MessageBox.Show(this, "Сначала выберите или создайте базу данных (.db).", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        dbPath = Path.GetFullPath(dbPath);
+
+        if (!File.Exists(dbPath))
+        {
+            MessageBox.Show(this, "Файл базы данных не найден:\n" + dbPath, "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
         // Создаём папки, чтобы не падать на записи ini/out
         try
         {
-            Directory.CreateDirectory(Path.Combine(baseDir, "cache"));
             Directory.CreateDirectory(Path.Combine(baseDir, "reports"));
             Directory.CreateDirectory(Path.GetDirectoryName(excelOut) ?? baseDir);
+            Directory.CreateDirectory(Path.GetDirectoryName(dbPath) ?? baseDir);
         }
         catch (Exception ex)
         {
@@ -412,7 +427,7 @@ public class MainForm : Form
         string iniPath = Path.Combine(baseDir, "scan.ini");
         try
         {
-            File.WriteAllText(iniPath, BuildIni(baseDir, root, excelOut), Encoding.UTF8);
+            File.WriteAllText(iniPath, BuildIni(baseDir, root, excelOut, dbPath), Encoding.UTF8);
         }
         catch (Exception ex)
         {
@@ -420,9 +435,9 @@ public class MainForm : Form
             return;
         }
 
-        AppendLog("=== Запуск ===\n");
-        AppendLog("NX: " + nxBase + "\n");
+        AppendLog("NX:   " + nxBase + "\n");
         AppendLog("Root: " + root + "\n");
+        AppendLog("DB:   " + dbPath + "\n");
         AppendLog("INI:  " + iniPath + "\n\n");
 
         // Команда
@@ -508,16 +523,18 @@ public class MainForm : Form
         }
     }
 
-    string BuildIni(string baseDir, string root, string excelOut)
+    string BuildIni(string baseDir, string root, string excelOut, string dbPath)
     {
-        // Важно: относительные пути тут можно писать как .\cache\parts.db и .\reports\Parts.xlsx
-        // ScanOptionsLoader должен привязывать их к папке scan.ini (мы это уже обсуждали)
         var sb = new StringBuilder();
 
+        string fullRoot = Path.GetFullPath(root);
+        string fullExcelOut = Path.GetFullPath(excelOut);
+        string fullDbPath = Path.GetFullPath(dbPath);
+
         sb.AppendLine("[Scan]");
-        sb.AppendLine("Root=" + root);
+        sb.AppendLine("Root=" + fullRoot);
         sb.AppendLine("Mode=" + (cmbMode.SelectedIndex == 1 ? "ScanOnly" : "ScanAndExport"));
-        sb.AppendLine("DbPath=.\\cache\\parts.db");
+        sb.AppendLine("DbPath=" + fullDbPath);
 
         // Фильтры: каждая строка или через ;
         string raw = tbFilters.Text ?? "";
@@ -531,8 +548,7 @@ public class MainForm : Form
 
         sb.AppendLine();
         sb.AppendLine("[Excel]");
-        sb.AppendLine("Out=" + excelOut);
-        //sb.AppendLine("GroupSheets=" + (cbGroupSheets.Checked ? "1" : "0"));
+        sb.AppendLine("Out=" + fullExcelOut);
         sb.AppendLine("GroupMode=" + (cmbGroupMode.SelectedIndex == 1 ? "AllInOne" : "FirstLevel"));
 
         return sb.ToString();
