@@ -141,11 +141,11 @@ public class MainForm : Form
         paramsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         paramsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
 
-        var lblGroup = new Label { Text = "Группировка:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 10, 0) };
-        cmbGroupMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, Margin = new Padding(0, 3, 0, 3) };
-        cmbGroupMode.Items.Add("Первый уровень (FirstLevel)");
-        cmbGroupMode.Items.Add("Всё в одном (AllInOne)");
-        cmbGroupMode.SelectedIndex = 0;
+        //var lblGroup = new Label { Text = "Группировка:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 10, 0) };
+        //cmbGroupMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, Margin = new Padding(0, 3, 0, 3) };
+        //cmbGroupMode.Items.Add("Первый уровень (FirstLevel)");
+        //cmbGroupMode.Items.Add("Всё в одном (AllInOne)");
+        //cmbGroupMode.SelectedIndex = 0;
 
         var lblMode = new Label { Text = "Режим:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 10, 0) };
         cmbMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, Margin = new Padding(0, 3, 0, 3) };
@@ -153,10 +153,10 @@ public class MainForm : Form
         cmbMode.Items.Add("Только сканировать (ScanOnly)");
         cmbMode.SelectedIndex = 0;
 
-        paramsGrid.Controls.Add(lblGroup, 0, 0);
-        paramsGrid.Controls.Add(cmbGroupMode, 1, 0);
-        paramsGrid.Controls.Add(lblMode, 0, 1);
-        paramsGrid.Controls.Add(cmbMode, 1, 1);
+        //paramsGrid.Controls.Add(lblGroup, 0, 0);
+        //paramsGrid.Controls.Add(cmbGroupMode, 1, 0);
+        paramsGrid.Controls.Add(lblMode, 0, 0);
+        paramsGrid.Controls.Add(cmbMode, 1, 0);
 
         AddRow(grid, "Параметры:", paramsGrid, null);
 
@@ -169,6 +169,11 @@ public class MainForm : Form
         };
 
         tvFolders = new TreeView { Dock = DockStyle.Fill };
+        tvFolders.NodeMouseDoubleClick += (s, e) =>
+        {
+            if (e.Node != null)
+                AddSelectedFolderToSelectedSheet();
+        };
         tvFolders.BeforeExpand += (s, e) => ExpandFolderNode(e.Node);
         splitFolders.Panel1.Controls.Add(tvFolders);
 
@@ -536,12 +541,13 @@ public class MainForm : Form
         sb.AppendLine("Mode=" + (cmbMode.SelectedIndex == 1 ? "ScanOnly" : "ScanAndExport"));
         sb.AppendLine("DbPath=" + fullDbPath);
 
-        // Фильтры: каждая строка или через ;
+        // Фильтры
         string raw = tbFilters.Text ?? "";
         var items = raw.Split(new[] { '\r', '\n', ';' }, StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < items.Length; i++)
+
+        foreach (var item in items)
         {
-            string t = items[i].Trim();
+            string t = item.Trim();
             if (t.Length == 0) continue;
             sb.AppendLine("IncludeFolderName=" + t);
         }
@@ -549,7 +555,6 @@ public class MainForm : Form
         sb.AppendLine();
         sb.AppendLine("[Excel]");
         sb.AppendLine("Out=" + fullExcelOut);
-        sb.AppendLine("GroupMode=" + (cmbGroupMode.SelectedIndex == 1 ? "AllInOne" : "FirstLevel"));
 
         return sb.ToString();
     }
