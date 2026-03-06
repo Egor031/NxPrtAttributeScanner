@@ -1,4 +1,6 @@
-﻿using System;
+﻿// CacheRepository.cs (updated)
+// Зависимости: System.Data.SQLite, System.IO, System.Globalization, System.Collections.Generic
+using System;
 using System.Collections.Generic;
 using System.Data.SQLite;
 using System.IO;
@@ -14,6 +16,28 @@ public sealed class PartRow
     public DateTime LastWriteUtc;
     public DateTime ExtractedUtc;
     public Dictionary<string, string> Attrs;
+}
+
+public sealed class SheetInfo
+{
+    public int Id;
+    public string Name;
+    public int SortOrder;
+    public List<SheetFolder> Folders = new List<SheetFolder>();
+}
+
+public sealed class SheetFolder
+{
+    public string RelPath; // относительный путь относительно root
+    public bool IncludeSubfolders;
+}
+
+public sealed class FilterItem
+{
+    public int Id;
+    public string Type; // "include" или "exclude"
+    public string Pattern;
+    public bool Enabled;
 }
 
 public sealed class CacheRepository
@@ -35,7 +59,15 @@ public sealed class CacheRepository
 
             using (var cmd = con.CreateCommand())
             {
+                // существующие таблицы + новые для листов/фильтров/meta
                 cmd.CommandText = @"
+PRAGMA journal_mode = WAL;
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+
 CREATE TABLE IF NOT EXISTS files (
   full_path TEXT PRIMARY KEY,
   file_size INTEGER NOT NULL,
@@ -56,12 +88,302 @@ CREATE TABLE IF NOT EXISTS attributes (
   PRIMARY KEY(full_path, attr_name)
 );
 CREATE INDEX IF NOT EXISTS idx_attr_name ON attributes(attr_name);
+
+-- Листы (sheets) и связанные с ними папки (relative paths)
+CREATE TABLE IF NOT EXISTS sheets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS sheet_folders (
+  sheet_id INTEGER NOT NULL,
+  rel_path TEXT NOT NULL,
+  include_subfolders INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(sheet_id, rel_path)
+);
+
+CREATE TABLE IF NOT EXISTS filters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL, -- 'include' or 'exclude'
+  pattern TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1
+);
 ";
+                cmd.ExecuteNonQuery();
+            }
+
+            // ensure meta.schema_version exists
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = "INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','1');";
                 cmd.ExecuteNonQuery();
             }
         }
     }
 
+    // -------------------------
+    // meta helpers
+    // -------------------------
+    public string GetMeta(string key, string defaultValue = null)
+    {
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = "SELECT value FROM meta WHERE key = $k;";
+                cmd.Parameters.AddWithValue("$k", key);
+                var v = cmd.ExecuteScalar();
+                return v == null ? defaultValue : (string)v;
+            }
+        }
+    }
+
+    public void SetMeta(string key, string value)
+    {
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = "INSERT INTO meta(key,value) VALUES($k,$v) ON CONFLICT(key) DO UPDATE SET value=excluded.value;";
+                cmd.Parameters.AddWithValue("$k", key);
+                cmd.Parameters.AddWithValue("$v", value ?? "");
+                cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    // Root path stored in meta as 'root_path'
+    public string GetRootPath()
+    {
+        return GetMeta("root_path", "");
+    }
+
+    public void SetRootPath(string root)
+    {
+        SetMeta("root_path", root ?? "");
+    }
+
+    // -------------------------
+    // sheets / sheet_folders
+    // -------------------------
+    public List<SheetInfo> ListSheets()
+    {
+        var res = new List<SheetInfo>();
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = "SELECT id, name, sort_order FROM sheets ORDER BY sort_order, id;";
+                using (var r = cmd.ExecuteReader())
+                {
+                    while (r.Read())
+                    {
+                        res.Add(new SheetInfo
+                        {
+                            Id = r.GetInt32(0),
+                            Name = r.IsDBNull(1) ? "" : r.GetString(1),
+                            SortOrder = r.IsDBNull(2) ? 0 : r.GetInt32(2)
+                        });
+                    }
+                }
+            }
+
+            // load folders for each sheet
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = @"
+SELECT sheet_id, rel_path, include_subfolders
+FROM sheet_folders
+ORDER BY sheet_id, rel_path;";
+                using (var r = cmd.ExecuteReader())
+                {
+                    while (r.Read())
+                    {
+                        int sid = r.GetInt32(0);
+                        string rel = r.IsDBNull(1) ? "" : r.GetString(1);
+                        bool inc = r.IsDBNull(2) ? true : r.GetInt32(2) != 0;
+                        var s = res.Find(x => x.Id == sid);
+                        if (s != null)
+                            s.Folders.Add(new SheetFolder { RelPath = rel, IncludeSubfolders = inc });
+                    }
+                }
+            }
+        }
+        return res;
+    }
+
+    public int CreateSheet(string name)
+    {
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var tx = con.BeginTransaction())
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "INSERT INTO sheets(name, sort_order) VALUES($n, (SELECT IFNULL(MAX(sort_order),0)+1 FROM sheets));";
+                cmd.Parameters.AddWithValue("$n", name ?? "");
+                cmd.ExecuteNonQuery();
+
+                cmd.CommandText = "SELECT last_insert_rowid();";
+                long id = (long)cmd.ExecuteScalar();
+                tx.Commit();
+                return (int)id;
+            }
+        }
+    }
+
+    public void RenameSheet(int id, string newName)
+    {
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = "UPDATE sheets SET name=$n WHERE id=$id;";
+                cmd.Parameters.AddWithValue("$n", newName ?? "");
+                cmd.Parameters.AddWithValue("$id", id);
+                cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    public void DeleteSheet(int id)
+    {
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var tx = con.BeginTransaction())
+            {
+                using (var cmd = con.CreateCommand())
+                {
+                    cmd.Transaction = tx;
+                    cmd.CommandText = "DELETE FROM sheet_folders WHERE sheet_id = $id;";
+                    cmd.Parameters.AddWithValue("$id", id);
+                    cmd.ExecuteNonQuery();
+                }
+                using (var cmd = con.CreateCommand())
+                {
+                    cmd.Transaction = tx;
+                    cmd.CommandText = "DELETE FROM sheets WHERE id = $id;";
+                    cmd.Parameters.AddWithValue("$id", id);
+                    cmd.ExecuteNonQuery();
+                }
+                tx.Commit();
+            }
+        }
+    }
+
+    public void AddFolderToSheet(int sheetId, string relPath, bool includeSubfolders)
+    {
+        if (relPath == null) relPath = "";
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = @"
+INSERT OR REPLACE INTO sheet_folders(sheet_id, rel_path, include_subfolders)
+VALUES($sid, $rel, $inc);";
+                cmd.Parameters.AddWithValue("$sid", sheetId);
+                cmd.Parameters.AddWithValue("$rel", relPath);
+                cmd.Parameters.AddWithValue("$inc", includeSubfolders ? 1 : 0);
+                cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    public void RemoveFolderFromSheet(int sheetId, string relPath)
+    {
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = "DELETE FROM sheet_folders WHERE sheet_id = $sid AND rel_path = $rel;";
+                cmd.Parameters.AddWithValue("$sid", sheetId);
+                cmd.Parameters.AddWithValue("$rel", relPath ?? "");
+                cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    // Возвращает все листы и папки (удобно для GUI)
+    public List<SheetInfo> GetSheetsWithFolders()
+    {
+        return ListSheets();
+    }
+
+    // -------------------------
+    // filters (simple)
+    // -------------------------
+    public List<FilterItem> ListFilters()
+    {
+        var res = new List<FilterItem>();
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = "SELECT id, type, pattern, enabled FROM filters ORDER BY id;";
+                using (var r = cmd.ExecuteReader())
+                {
+                    while (r.Read())
+                    {
+                        res.Add(new FilterItem
+                        {
+                            Id = r.GetInt32(0),
+                            Type = r.IsDBNull(1) ? "" : r.GetString(1),
+                            Pattern = r.IsDBNull(2) ? "" : r.GetString(2),
+                            Enabled = r.IsDBNull(3) ? true : r.GetInt32(3) != 0
+                        });
+                    }
+                }
+            }
+        }
+        return res;
+    }
+
+    public int AddFilter(string type, string pattern, bool enabled = true)
+    {
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = "INSERT INTO filters(type, pattern, enabled) VALUES($t,$p,$e);";
+                cmd.Parameters.AddWithValue("$t", type ?? "include");
+                cmd.Parameters.AddWithValue("$p", pattern ?? "");
+                cmd.Parameters.AddWithValue("$e", enabled ? 1 : 0);
+                cmd.ExecuteNonQuery();
+                cmd.CommandText = "SELECT last_insert_rowid();";
+                long id = (long)cmd.ExecuteScalar();
+                return (int)id;
+            }
+        }
+    }
+
+    public void RemoveFilter(int id)
+    {
+        using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
+        {
+            con.Open();
+            using (var cmd = con.CreateCommand())
+            {
+                cmd.CommandText = "DELETE FROM filters WHERE id = $id;";
+                cmd.Parameters.AddWithValue("$id", id);
+                cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    // -------------------------
+    // прежние методы (без изменений по логике, минимально подправлены)
+    // -------------------------
     public bool NeedsExtraction(string fullPath, long fileSize, DateTime lastWriteUtc)
     {
         using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
@@ -115,6 +437,7 @@ ON CONFLICT(full_path) DO UPDATE SET
  extracted_at_utc=excluded.extracted_at_utc,
  status='OK',
  error_message=NULL;";
+
                     cmd.Parameters.AddWithValue("$path", fullPath);
                     cmd.Parameters.AddWithValue("$size", fileSize);
                     cmd.Parameters.AddWithValue("$lw", lastWriteUtc.ToString("O"));
@@ -190,6 +513,7 @@ ON CONFLICT(full_path) DO UPDATE SET
             }
         }
     }
+
     public List<string> GetAllAttributeNames()
     {
         var names = new List<string>();
@@ -214,18 +538,16 @@ ORDER BY attr_name;";
         return names;
     }
 
+    // Возвращает все части под указанным root (только записи статус='OK' и подпадающие под root)
     public List<PartRow> GetAllParts(string rootFolder, bool groupByFolderSheets)
     {
         var parts = new List<PartRow>();
         var byPath = new Dictionary<string, PartRow>(StringComparer.OrdinalIgnoreCase);
 
-        string rootLike = NormalizeRootForLike(rootFolder) + "%";
-
         using (var con = new SQLiteConnection($"Data Source={_dbPath};Version=3;"))
         {
             con.Open();
 
-            // 1) files: 1 строка = 1 файл
             using (var cmd = con.CreateCommand())
             {
                 cmd.CommandText = @"
@@ -234,31 +556,23 @@ FROM files
 WHERE status='OK'
   AND full_path LIKE $root
 ORDER BY full_path;";
-                cmd.Parameters.AddWithValue("$root", rootLike);
+                cmd.Parameters.AddWithValue("$root", NormalizeRootForLike(rootFolder) + "%");
 
                 using (var r = cmd.ExecuteReader())
                 {
-                    int iFullPath = r.GetOrdinal("full_path");
-                    int iPartNo = r.GetOrdinal("part_no_file");
-                    int iDesig = r.GetOrdinal("designation_attr");
-                    int iMatch = r.GetOrdinal("match");
-                    int iLastWrite = r.GetOrdinal("last_write_time_utc");
-                    int iExtracted = r.GetOrdinal("extracted_at_utc");
-
                     while (r.Read())
                     {
-                        string fullPath = r.IsDBNull(iFullPath) ? "" : r.GetString(iFullPath);
-                        if (string.IsNullOrEmpty(fullPath)) continue;
+                        var fullPath = r.GetString(0);
 
                         var row = new PartRow
                         {
                             FullPath = fullPath,
-                            PartNoFile = r.IsDBNull(iPartNo) ? "" : r.GetString(iPartNo),
-                            Designation = r.IsDBNull(iDesig) ? "" : r.GetString(iDesig),
-                            Match = r.IsDBNull(iMatch) ? "" : r.GetString(iMatch),
-                            LastWriteUtc = ParseIsoUtc(r.IsDBNull(iLastWrite) ? "" : r.GetString(iLastWrite)),
-                            ExtractedUtc = ParseIsoUtc(r.IsDBNull(iExtracted) ? "" : r.GetString(iExtracted)),
-                            FolderSheetKey = "ALL",
+                            PartNoFile = r.IsDBNull(1) ? "" : r.GetString(1),
+                            Designation = r.IsDBNull(2) ? "" : r.GetString(2),
+                            Match = r.IsDBNull(3) ? "" : r.GetString(3),
+                            LastWriteUtc = ParseIsoUtc(r.IsDBNull(4) ? "" : r.GetString(4)),
+                            ExtractedUtc = ParseIsoUtc(r.IsDBNull(5) ? "" : r.GetString(5)),
+                            FolderSheetKey = groupByFolderSheets ? GetSheetKey(rootFolder, fullPath) : "ALL",
                             Attrs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                         };
 
@@ -268,35 +582,24 @@ ORDER BY full_path;";
                 }
             }
 
-            // 2) attributes: подгружаем только для файлов из root и OK
+            // 2) читаем attributes одним проходом
             using (var cmd = con.CreateCommand())
             {
                 cmd.CommandText = @"
-SELECT a.full_path, a.attr_name, a.attr_value
-FROM attributes a
-JOIN files f ON f.full_path = a.full_path
-WHERE f.status='OK'
-  AND f.full_path LIKE $root
-ORDER BY a.full_path, a.attr_name;";
-                cmd.Parameters.AddWithValue("$root", rootLike);
-
+SELECT full_path, attr_name, attr_value
+FROM attributes
+ORDER BY full_path, attr_name;";
                 using (var r = cmd.ExecuteReader())
                 {
-                    int iPath = r.GetOrdinal("full_path");
-                    int iName = r.GetOrdinal("attr_name");
-                    int iVal = r.GetOrdinal("attr_value");
-
                     while (r.Read())
                     {
-                        string p = r.IsDBNull(iPath) ? "" : r.GetString(iPath);
+                        string p = r.GetString(0);
                         PartRow row;
                         if (!byPath.TryGetValue(p, out row)) continue;
 
-                        string name = r.IsDBNull(iName) ? "" : r.GetString(iName);
-                        if (string.IsNullOrEmpty(name)) continue;
-
-                        string value = r.IsDBNull(iVal) ? "" : r.GetString(iVal);
-                        row.Attrs[name] = value ?? "";
+                        string name = r.GetString(1);
+                        string value = r.IsDBNull(2) ? "" : r.GetString(2);
+                        row.Attrs[name] = value;
                     }
                 }
             }
@@ -306,12 +609,12 @@ ORDER BY a.full_path, a.attr_name;";
     }
 
     private static DateTime ParseIsoUtc(string iso)
-{
-    if (string.IsNullOrWhiteSpace(iso))
-        return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
+    {
+        if (string.IsNullOrWhiteSpace(iso))
+            return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
 
-    return DateTime.Parse(iso, null, DateTimeStyles.RoundtripKind).ToUniversalTime();
-}
+        return DateTime.Parse(iso, null, DateTimeStyles.RoundtripKind).ToUniversalTime();
+    }
 
     private static string NormalizeRootForLike(string rootFolder)
     {
@@ -322,7 +625,7 @@ ORDER BY a.full_path, a.attr_name;";
         if (!root.EndsWith(Path.DirectorySeparatorChar.ToString()))
             root += Path.DirectorySeparatorChar;
 
-        return root;
+        return root.Replace("'", "''"); // minimal escaping for LIKE pattern
     }
 
     // Для .NET Framework 4.7.2 нет Path.GetRelativePath → используем Uri
@@ -367,6 +670,15 @@ ORDER BY a.full_path, a.attr_name;";
         return rel;
     }
 
+    // При необходимости получить абсолютный путь по относительному, зная root
+    public static string GetAbsolutePathFromRel(string rootFolder, string relPath)
+    {
+        if (string.IsNullOrEmpty(relPath)) return rootFolder;
+        if (!rootFolder.EndsWith(Path.DirectorySeparatorChar.ToString()))
+            rootFolder += Path.DirectorySeparatorChar;
+        return Path.Combine(rootFolder, relPath);
+    }
+
     public Dictionary<string, string> GetAttributesByPath(string fullPath)
     {
         var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -398,6 +710,7 @@ ORDER BY attr_name;";
         return dict;
     }
 
+    // Удаляем записи, которые не были увидены в последнем проходе, НО ТОЛЬКО ПОД УКАЗАННЫМ ROOT
     public void RemoveNotSeenUnderRoot(string rootFolder, HashSet<string> seen)
     {
         string rootLike = NormalizeRootForLike(rootFolder) + "%";
@@ -453,4 +766,3 @@ WHERE full_path LIKE $root;";
         }
     }
 }
-

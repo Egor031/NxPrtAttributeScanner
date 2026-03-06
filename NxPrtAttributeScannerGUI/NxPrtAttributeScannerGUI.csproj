@@ -73,5 +73,11 @@
   <ItemGroup>
     <None Include="App.config" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\NxPrtAttributeScanner\NxPrtAttributeScanner.csproj">
+      <Project>{e6927430-91b9-421e-b71e-6c1b32ec9d7e}</Project>
+      <Name>NxPrtAttributeScanner</Name>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

@@ -27,6 +27,26 @@ public class MainForm : Form
     Label lblStatus;
 
     Process _proc;
+    // ===== DB / листы =====
+    TextBox tbDbPath;
+    Button btnPickDb;
+    Button btnNewDb;
+
+    SplitContainer splitFolders;    // внутри верхней панели
+    TreeView tvFolders;
+
+    ListBox lbSheets;
+    ListBox lbSheetFolders;
+
+    Button btnSheetAdd;
+    Button btnSheetRename;
+    Button btnSheetDelete;
+    Button btnAddFolderToSheet;
+    Button btnRemoveFolderFromSheet;
+
+    CacheRepository _repo;
+    string _rootFromDb;
+    int _selectedSheetId = -1;
 
     public MainForm()
     {
@@ -43,25 +63,18 @@ public class MainForm : Form
     {
         Padding = new Padding(10);
 
-        // ===== Split: сверху настройки+кнопки, снизу лог =====
+        // ===== Split: сверху UI, снизу лог =====
         var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Horizontal,
             FixedPanel = FixedPanel.Panel1,
-            IsSplitterFixed = false,
-            Panel1MinSize = 260,
-            Panel2MinSize = 150
+            IsSplitterFixed = false
+            // ВАЖНО: НЕ ставим Panel1MinSize/Panel2MinSize здесь
         };
-
         Controls.Add(split);
 
-        // Чтобы по умолчанию лог был больше
-        split.FixedPanel = FixedPanel.Panel1;
-        split.IsSplitterFixed = false;
-        split.SplitterDistance = 300;
-
-        // ===== Верхняя панель: 2 строки (настройки + кнопки) =====
+        // ===== Верхняя панель: настройки + кнопки =====
         var topLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -69,9 +82,8 @@ public class MainForm : Form
             RowCount = 2,
             Padding = new Padding(0)
         };
-        topLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f)); // настройки
-        topLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));     // кнопки
-
+        topLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+        topLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         split.Panel1.Controls.Add(topLayout);
 
         // ===== Таблица настроек =====
@@ -83,33 +95,40 @@ public class MainForm : Form
             AutoSize = false,
             Padding = new Padding(0)
         };
-
-        // Колонки: Label | Input | Button
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-
         topLayout.Controls.Add(grid, 0, 0);
 
-        // ===== Row: NX =====
+        // ===== NX =====
         tbNxBaseDir = new TextBox { Dock = DockStyle.Fill };
         btnPickNx = new Button { Text = "Выбрать…", AutoSize = true };
         btnPickNx.Click += (s, e) => PickNxFolder();
         AddRow(grid, "Папка NX (UGII_BASE_DIR):", tbNxBaseDir, btnPickNx);
 
-        // ===== Row: Root =====
+        // ===== ROOT =====
         tbRoot = new TextBox { Dock = DockStyle.Fill };
         btnPickRoot = new Button { Text = "Выбрать…", AutoSize = true };
         btnPickRoot.Click += (s, e) => PickRootFolder();
         AddRow(grid, "Корневая папка (Root):", tbRoot, btnPickRoot);
 
-        // ===== Row: Excel Out =====
+        // ===== DB =====
+        tbDbPath = new TextBox { Dock = DockStyle.Fill };
+        btnPickDb = new Button { Text = "Открыть .db…", AutoSize = true };
+        btnPickDb.Click += (s, e) => PickDb();
+        AddRow(grid, "База данных (.db):", tbDbPath, btnPickDb);
+
+        btnNewDb = new Button { Text = "Новая база по ROOT", AutoSize = true };
+        btnNewDb.Click += (s, e) => CreateDbFromRoot();
+        AddRow(grid, "", new Panel { Height = 1 }, btnNewDb);
+
+        // ===== Excel Out =====
         tbExcelOut = new TextBox { Dock = DockStyle.Fill };
         btnPickExcel = new Button { Text = "Выбрать…", AutoSize = true };
         btnPickExcel.Click += (s, e) => PickExcelOut();
         AddRow(grid, "Файл Excel (Out):", tbExcelOut, btnPickExcel);
 
-        // ===== Параметры (2 строки, без чекбокса) =====
+        // ===== Параметры =====
         var paramsGrid = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -121,58 +140,96 @@ public class MainForm : Form
         };
         paramsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         paramsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        paramsGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        paramsGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        var lblGroup = new Label
-        {
-            Text = "Группировка:",
-            AutoSize = true,
-            Anchor = AnchorStyles.Left,
-            Margin = new Padding(0, 6, 10, 0)
-        };
-
-        cmbGroupMode = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0, 3, 0, 3)
-        };
+        var lblGroup = new Label { Text = "Группировка:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 10, 0) };
+        cmbGroupMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, Margin = new Padding(0, 3, 0, 3) };
         cmbGroupMode.Items.Add("Первый уровень (FirstLevel)");
         cmbGroupMode.Items.Add("Всё в одном (AllInOne)");
         cmbGroupMode.SelectedIndex = 0;
 
-        paramsGrid.Controls.Add(lblGroup, 0, 0);
-        paramsGrid.Controls.Add(cmbGroupMode, 1, 0);
-
-        var lblMode = new Label
-        {
-            Text = "Режим:",
-            AutoSize = true,
-            Anchor = AnchorStyles.Left,
-            Margin = new Padding(0, 6, 10, 0)
-        };
-
-        cmbMode = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0, 3, 0, 3)
-        };
+        var lblMode = new Label { Text = "Режим:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 10, 0) };
+        cmbMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, Margin = new Padding(0, 3, 0, 3) };
         cmbMode.Items.Add("Сканировать и выгрузить в Excel (ScanAndExport)");
         cmbMode.Items.Add("Только сканировать (ScanOnly)");
         cmbMode.SelectedIndex = 0;
 
+        paramsGrid.Controls.Add(lblGroup, 0, 0);
+        paramsGrid.Controls.Add(cmbGroupMode, 1, 0);
         paramsGrid.Controls.Add(lblMode, 0, 1);
         paramsGrid.Controls.Add(cmbMode, 1, 1);
 
         AddRow(grid, "Параметры:", paramsGrid, null);
 
-        // ===== Фильтры: делаем строку растягиваемой =====
-        // 1) строка-лейбл (обычная)
+        // ===== Дерево + листы =====
+        splitFolders = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical
+            // НЕ ставим Panel1MinSize/Panel2MinSize здесь
+        };
+
+        tvFolders = new TreeView { Dock = DockStyle.Fill };
+        tvFolders.BeforeExpand += (s, e) => ExpandFolderNode(e.Node);
+        splitFolders.Panel1.Controls.Add(tvFolders);
+
+        var right = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 2
+        };
+        right.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+        right.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+        right.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+        right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        splitFolders.Panel2.Controls.Add(right);
+
+        lbSheets = new ListBox { Dock = DockStyle.Fill };
+        lbSheets.SelectedIndexChanged += (s, e) => OnSheetSelected();
+        right.Controls.Add(lbSheets, 0, 0);
+
+        lbSheetFolders = new ListBox { Dock = DockStyle.Fill };
+        right.Controls.Add(lbSheetFolders, 1, 0);
+
+        var sheetBtns = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            Padding = new Padding(0, 6, 0, 0)
+        };
+
+        btnSheetAdd = new Button { Text = "Создать лист", AutoSize = true };
+        btnSheetAdd.Click += (s, e) => AddSheet();
+
+        btnSheetRename = new Button { Text = "Переименовать", AutoSize = true };
+        btnSheetRename.Click += (s, e) => RenameSheet();
+
+        btnSheetDelete = new Button { Text = "Удалить", AutoSize = true };
+        btnSheetDelete.Click += (s, e) => DeleteSheet();
+
+        btnAddFolderToSheet = new Button { Text = "Добавить папку →", AutoSize = true };
+        btnAddFolderToSheet.Click += (s, e) => AddSelectedFolderToSelectedSheet();
+
+        btnRemoveFolderFromSheet = new Button { Text = "Убрать папку", AutoSize = true };
+        btnRemoveFolderFromSheet.Click += (s, e) => RemoveSelectedFolderFromSheet();
+
+        sheetBtns.Controls.Add(btnSheetAdd);
+        sheetBtns.Controls.Add(btnSheetRename);
+        sheetBtns.Controls.Add(btnSheetDelete);
+        sheetBtns.Controls.Add(new Label { Text = "   ", AutoSize = true });
+        sheetBtns.Controls.Add(btnAddFolderToSheet);
+        sheetBtns.Controls.Add(btnRemoveFolderFromSheet);
+
+        right.Controls.Add(sheetBtns, 0, 1);
+        right.SetColumnSpan(sheetBtns, 2);
+
+        AddRow(grid, "Листы и папки:", splitFolders, null, makeRowFill: true);
+
+        // ===== Фильтры =====
         AddRow(grid, "Фильтр папок (каждая с новой строки или через ;):", new Panel { Height = 1 }, null);
 
-        // 2) строка-текстбокс (растягивается)
         tbFilters = new TextBox
         {
             Dock = DockStyle.Fill,
@@ -182,7 +239,7 @@ public class MainForm : Form
         };
         AddRow(grid, "", tbFilters, null, makeRowFill: true);
 
-        // ===== Нижняя панель с кнопками (в отдельной строке topLayout) =====
+        // ===== Кнопки снизу =====
         var bottomBar = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -200,13 +257,7 @@ public class MainForm : Form
         btnStop = new Button { Text = "Остановить", AutoSize = true, Enabled = false };
         btnStop.Click += (s, e) => StopRun();
 
-        lblStatus = new Label
-        {
-            Text = "Готово.",
-            AutoSize = true,
-            Anchor = AnchorStyles.Left,
-            Padding = new Padding(8, 6, 0, 0)
-        };
+        lblStatus = new Label { Text = "Готово.", AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(8, 6, 0, 0) };
 
         bottomBar.Controls.Add(btnStart, 0, 0);
         bottomBar.Controls.Add(btnStop, 1, 0);
@@ -214,19 +265,31 @@ public class MainForm : Form
 
         topLayout.Controls.Add(bottomBar, 0, 1);
 
-        // ===== Log (нижняя панель split) =====
-        tbLog = new RichTextBox
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true
-        };
+        // ===== Лог =====
+        tbLog = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true };
         split.Panel2.Controls.Add(tbLog);
 
-        // При закрытии — убить процесс, если он жив
         FormClosing += (s, e) =>
         {
             try { if (_proc != null && !_proc.HasExited) _proc.Kill(); } catch { }
         };
+
+        // ===== ВСЕ настройки MinSize и SplitterDistance делаем ТОЛЬКО после появления размеров =====
+        Load += (s, e) =>
+        {
+            // 1) главный split (верх/низ)
+            split.Panel1MinSize = 260;
+            split.Panel2MinSize = 150;
+            SetSplitterDistanceSafe(split, Math.Max(split.Panel1MinSize, (int)(split.Height * 0.35)));
+
+            // 2) внутренний split (лево/право)
+            splitFolders.Panel1MinSize = 220;
+            splitFolders.Panel2MinSize = 260;
+            SetSplitterDistanceSafeVertical(splitFolders, splitFolders.Width / 2);
+        };
+
+        split.SizeChanged += (s, e) => SetSplitterDistanceSafe(split, split.SplitterDistance);
+        splitFolders.SizeChanged += (s, e) => SetSplitterDistanceSafeVertical(splitFolders, splitFolders.SplitterDistance);
     }
 
     void LoadDefaults()
@@ -524,6 +587,10 @@ public class MainForm : Form
         grid.Controls.Add(lbl, 0, row);
         grid.Controls.Add(input, 1, row);
 
+        // если кнопки нет — растянем input на 2 колонки (input + пустая)
+        if (button == null)
+            grid.SetColumnSpan(input, 2);
+
         if (button != null)
         {
             button.Margin = new Padding(0, 2, 0, 2);
@@ -550,5 +617,305 @@ public class MainForm : Form
     static Button MkButton(string text, int x, int y, int w)
     {
         return new Button { Left = x, Top = y, Width = w, Text = text };
+    }
+
+    void PickDb()
+    {
+        using (var dlg = new OpenFileDialog())
+        {
+            dlg.Filter = "SQLite DB (*.db)|*.db|All files (*.*)|*.*";
+            dlg.Title = "Открыть базу данных";
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            OpenDb(dlg.FileName);
+        }
+    }
+
+    void CreateDbFromRoot()
+    {
+        string root = (tbRoot.Text ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+        {
+            MessageBox.Show(this, "Сначала выберите существующую ROOT папку.", "ROOT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        using (var dlg = new SaveFileDialog())
+        {
+            dlg.Filter = "SQLite DB (*.db)|*.db";
+            dlg.Title = "Создать базу данных";
+            dlg.FileName = Path.GetFileName(root.TrimEnd('\\', '/')) + ".db";
+            dlg.InitialDirectory = AppDomain.CurrentDomain.BaseDirectory;
+
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            OpenDb(dlg.FileName);
+            tbDbPath.Text = dlg.FileName;
+
+            // сохраняем root в meta
+            try { _repo.SetRootPath(root); } catch { }
+            _rootFromDb = root;
+            LoadRootTree(root);
+        }
+    }
+
+    void OpenDb(string dbPath)
+    {
+        tbDbPath.Text = dbPath;
+
+        _repo = new CacheRepository(dbPath);
+
+        // root из базы (meta)
+        try { _rootFromDb = _repo.GetRootPath(); } catch { _rootFromDb = null; }
+
+        // если в базе root есть — покажем его в tbRoot (но не перетираем если пользователь уже ввёл?)
+        if (!string.IsNullOrWhiteSpace(_rootFromDb))
+            tbRoot.Text = _rootFromDb;
+
+        RefreshSheets();
+
+        if (!string.IsNullOrWhiteSpace(tbRoot.Text) && Directory.Exists(tbRoot.Text))
+            LoadRootTree(tbRoot.Text);
+        else
+            tvFolders.Nodes.Clear();
+    }
+
+    void LoadRootTree(string root)
+    {
+        tvFolders.BeginUpdate();
+        try
+        {
+            tvFolders.Nodes.Clear();
+            var rootNode = new TreeNode(Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar)))
+            {
+                Tag = root
+            };
+            rootNode.Nodes.Add(new TreeNode("..."));
+            tvFolders.Nodes.Add(rootNode);
+            rootNode.Expand();
+        }
+        finally { tvFolders.EndUpdate(); }
+    }
+
+    void ExpandFolderNode(TreeNode node)
+    {
+        if (node == null) return;
+        if (node.Nodes.Count == 1 && node.Nodes[0].Text == "...")
+        {
+            node.Nodes.Clear();
+
+            string path = node.Tag as string;
+            if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
+
+            try
+            {
+                foreach (var dir in Directory.GetDirectories(path))
+                {
+                    var child = new TreeNode(Path.GetFileName(dir)) { Tag = dir };
+                    try
+                    {
+                        if (Directory.GetDirectories(dir).Length > 0)
+                            child.Nodes.Add(new TreeNode("..."));
+                    }
+                    catch { }
+                    node.Nodes.Add(child);
+                }
+            }
+            catch { /* на сетевых дисках/правах может падать — игнор */ }
+        }
+    }
+
+    // ===== Sheets UI =====
+
+    sealed class SheetListItem
+    {
+        public int Id;
+        public string Name;
+        public SheetListItem(int id, string name) { Id = id; Name = name; }
+        public override string ToString() => Name;
+    }
+
+    void RefreshSheets()
+    {
+        lbSheets.Items.Clear();
+        lbSheetFolders.Items.Clear();
+        _selectedSheetId = -1;
+
+        if (_repo == null) return;
+
+        var sheets = _repo.ListSheets(); // ты реализуешь в CacheRepository
+        foreach (var sh in sheets)
+            lbSheets.Items.Add(new SheetListItem(sh.Id, sh.Name));
+    }
+
+    void OnSheetSelected()
+    {
+        lbSheetFolders.Items.Clear();
+        var item = lbSheets.SelectedItem as SheetListItem;
+        if (item == null || _repo == null) { _selectedSheetId = -1; return; }
+
+        _selectedSheetId = item.Id;
+
+        var sheets = _repo.GetSheetsWithFolders(); // ты реализуешь в CacheRepository
+        var sInfo = sheets.Find(x => x.Id == _selectedSheetId);
+        if (sInfo == null) return;
+
+        foreach (var f in sInfo.Folders)
+            lbSheetFolders.Items.Add(f.RelPath + (f.IncludeSubfolders ? "  (включая подпапки)" : ""));
+    }
+
+    void AddSheet()
+    {
+        if (_repo == null) { MessageBox.Show(this, "Откройте базу данных."); return; }
+        string name = Prompt("Название листа:", "Новый лист");
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        _repo.CreateSheet(name.Trim());
+        RefreshSheets();
+    }
+
+    void RenameSheet()
+    {
+        if (_repo == null) return;
+        var item = lbSheets.SelectedItem as SheetListItem;
+        if (item == null) return;
+
+        string name = Prompt("Новое название листа:", item.Name);
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        _repo.RenameSheet(item.Id, name.Trim());
+        RefreshSheets();
+    }
+
+    void DeleteSheet()
+    {
+        if (_repo == null) return;
+        var item = lbSheets.SelectedItem as SheetListItem;
+        if (item == null) return;
+
+        var ok = MessageBox.Show(this, $"Удалить лист \"{item.Name}\"?", "Подтверждение",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+
+        if (ok != DialogResult.Yes) return;
+
+        _repo.DeleteSheet(item.Id);
+        RefreshSheets();
+    }
+
+    void AddSelectedFolderToSelectedSheet()
+    {
+        if (_repo == null) { MessageBox.Show(this, "Откройте базу данных."); return; }
+        if (_selectedSheetId <= 0) { MessageBox.Show(this, "Выберите лист справа."); return; }
+        if (tvFolders.SelectedNode == null) { MessageBox.Show(this, "Выберите папку слева."); return; }
+
+        string root = (tbRoot.Text ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+        {
+            MessageBox.Show(this, "ROOT не задан или не существует."); return;
+        }
+
+        string abs = tvFolders.SelectedNode.Tag as string;
+        if (string.IsNullOrWhiteSpace(abs)) return;
+
+        string rel = MakeRel(root, abs);
+        if (rel == null)
+        {
+            MessageBox.Show(this, "Папка не принадлежит ROOT."); return;
+        }
+
+        _repo.AddFolderToSheet(_selectedSheetId, rel, includeSubfolders: true);
+        OnSheetSelected();
+    }
+
+    void RemoveSelectedFolderFromSheet()
+    {
+        if (_repo == null) return;
+        if (_selectedSheetId <= 0) return;
+        if (lbSheetFolders.SelectedItem == null) return;
+
+        string s = lbSheetFolders.SelectedItem.ToString();
+        string rel = s;
+        int idx = s.IndexOf("  (", StringComparison.Ordinal);
+        if (idx > 0) rel = s.Substring(0, idx);
+
+        _repo.RemoveFolderFromSheet(_selectedSheetId, rel);
+        OnSheetSelected();
+    }
+
+    static string MakeRel(string root, string abs)
+    {
+        try
+        {
+            if (!root.EndsWith(Path.DirectorySeparatorChar.ToString()))
+                root += Path.DirectorySeparatorChar;
+
+            var rootUri = new Uri(root);
+            var absUri = new Uri(abs);
+
+            if (rootUri.Scheme != absUri.Scheme) return null;
+
+            var relUri = rootUri.MakeRelativeUri(absUri);
+            return Uri.UnescapeDataString(relUri.ToString()).Replace('/', Path.DirectorySeparatorChar);
+        }
+        catch { return null; }
+    }
+
+    static string Prompt(string title, string defaultValue)
+    {
+        using (var f = new Form())
+        {
+            f.Text = title;
+            f.Width = 420;
+            f.Height = 140;
+            f.StartPosition = FormStartPosition.CenterParent;
+            f.FormBorderStyle = FormBorderStyle.FixedDialog;
+            f.MinimizeBox = false;
+            f.MaximizeBox = false;
+
+            var tb = new TextBox { Left = 10, Top = 10, Width = 380, Text = defaultValue ?? "" };
+            var ok = new Button { Text = "OK", Left = 230, Width = 75, Top = 45, DialogResult = DialogResult.OK };
+            var cancel = new Button { Text = "Отмена", Left = 315, Width = 75, Top = 45, DialogResult = DialogResult.Cancel };
+
+            f.Controls.Add(tb);
+            f.Controls.Add(ok);
+            f.Controls.Add(cancel);
+            f.AcceptButton = ok;
+            f.CancelButton = cancel;
+
+            return f.ShowDialog() == DialogResult.OK ? tb.Text : null;
+        }
+    }
+
+    static void SetSplitterDistanceSafe(SplitContainer split, int desired)
+    {
+        if (split == null) return;
+
+        // Важно: при Horizontal считаем по Height
+        int min = split.Panel1MinSize;
+        int max = split.Height - split.Panel2MinSize - split.SplitterWidth;
+
+        if (max < min) max = min; // на случай совсем маленького окна
+
+        int v = desired;
+        if (v < min) v = min;
+        if (v > max) v = max;
+
+        // чтобы не ловить исключение в момент, когда Handle ещё не создан
+        try { split.SplitterDistance = v; } catch { }
+    }
+
+    static void SetSplitterDistanceSafeVertical(SplitContainer split, int desired)
+    {
+        if (split == null) return;
+
+        int min = split.Panel1MinSize;
+        int max = split.Width - split.Panel2MinSize - split.SplitterWidth;
+        if (max < min) max = min;
+
+        int v = desired;
+        if (v < min) v = min;
+        if (v > max) v = max;
+
+        try { split.SplitterDistance = v; } catch { }
     }
 }
