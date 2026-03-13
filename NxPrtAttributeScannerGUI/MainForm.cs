@@ -14,7 +14,6 @@ public class MainForm : Form
 
     TextBox tbFilters;
     //CheckBox cbGroupSheets;
-    ComboBox cmbGroupMode;
 
     ComboBox cmbMode;
 
@@ -49,6 +48,17 @@ public class MainForm : Form
     string _rootFromDb;
     int _selectedSheetId = -1;
 
+    HashSet<string> _loadedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    HashSet<string> _selectedRelPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    bool _treeInternalUpdate = false;
+
+    enum FolderCheckState
+    {
+        None,
+        Partial,
+        Full
+    }
+
     public MainForm()
     {
         Text = "Сканер атрибутов NX PRT → Excel";
@@ -58,6 +68,12 @@ public class MainForm : Form
 
         InitializeUi();
         LoadDefaults();
+    }
+
+    sealed class FolderNodeTag
+    {
+        public string FullPath;
+        public string BaseText;
     }
 
     void InitializeUi()
@@ -182,7 +198,6 @@ public class MainForm : Form
             if (e.Node != null)
                 AddSelectedFolderToSelectedSheet();
         };
-        tvFolders.BeforeExpand += (s, e) => ExpandFolderNode(e.Node);
         splitFolders.Panel1.Controls.Add(tvFolders);
 
         var right = new TableLayoutPanel
@@ -199,7 +214,6 @@ public class MainForm : Form
 
         lbSheets = new ListBox { Dock = DockStyle.Fill };
         lbSheets.SelectedIndexChanged += (s, e) => OnSheetSelected();
-        SyncTreeChecks();
         right.Controls.Add(lbSheets, 0, 0);
 
         lbSheetFolders = new ListBox { Dock = DockStyle.Fill };
@@ -634,21 +648,6 @@ public class MainForm : Form
         }
     }
 
-    static Label MkLabel(string text, int x, int y, int w)
-    {
-        return new Label { Left = x, Top = y + 4, Width = w, Text = text };
-    }
-
-    static TextBox MkTextBox(int x, int y, int w)
-    {
-        return new TextBox { Left = x, Top = y, Width = w };
-    }
-
-    static Button MkButton(string text, int x, int y, int w)
-    {
-        return new Button { Left = x, Top = y, Width = w, Text = text };
-    }
-
     void PickDb()
     {
         using (var dlg = new OpenFileDialog())
@@ -695,12 +694,14 @@ public class MainForm : Form
 
         _repo = new CacheRepository(dbPath);
 
-        // root из базы (meta)
         try { _rootFromDb = _repo.GetRootPath(); } catch { _rootFromDb = null; }
 
-        // если в базе root есть — покажем его в tbRoot (но не перетираем если пользователь уже ввёл?)
         if (!string.IsNullOrWhiteSpace(_rootFromDb))
             tbRoot.Text = _rootFromDb;
+
+        _selectedSheetId = -1;
+        _selectedRelPaths.Clear();
+        _loadedFolders.Clear();
 
         RefreshSheets();
 
@@ -716,45 +717,88 @@ public class MainForm : Form
         try
         {
             tvFolders.Nodes.Clear();
-            var rootNode = new TreeNode(Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar)))
+            _loadedFolders.Clear();
+
+            string baseText = Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar));
+            if (string.IsNullOrWhiteSpace(baseText))
+                baseText = root;
+
+            var rootNode = new TreeNode(baseText)
             {
-                Tag = root
+                Tag = new FolderNodeTag
+                {
+                    FullPath = root,
+                    BaseText = baseText
+                }
             };
+
             rootNode.Nodes.Add(new TreeNode("..."));
             tvFolders.Nodes.Add(rootNode);
-            rootNode.Expand();
+
+            ApplyNodeVisualStateFromSelection(rootNode);
         }
-        finally { tvFolders.EndUpdate(); }
+        finally
+        {
+            tvFolders.EndUpdate();
+        }
     }
 
     void ExpandFolderNode(TreeNode node)
     {
         if (node == null) return;
-        if (node.Nodes.Count == 1 && node.Nodes[0].Text == "...")
+
+        var tag = node.Tag as FolderNodeTag;
+        string path = tag != null ? tag.FullPath : null;
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
+
+        if (_loadedFolders.Contains(path))
+            return;
+
+        tvFolders.BeginUpdate();
+        try
         {
             node.Nodes.Clear();
-
-            string path = node.Tag as string;
-            if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
 
             try
             {
                 foreach (var dir in Directory.GetDirectories(path))
                 {
-                    var child = new TreeNode(Path.GetFileName(dir)) { Tag = dir };
+                    string baseText = Path.GetFileName(dir);
+
+                    var child = new TreeNode(baseText)
+                    {
+                        Tag = new FolderNodeTag
+                        {
+                            FullPath = dir,
+                            BaseText = baseText
+                        }
+                    };
+
                     try
                     {
                         if (Directory.GetDirectories(dir).Length > 0)
                             child.Nodes.Add(new TreeNode("..."));
                     }
                     catch { }
+
                     node.Nodes.Add(child);
+                    ApplyNodeVisualStateFromSelection(child);
                 }
             }
-            catch { /* на сетевых дисках/правах может падать — игнор */ }
-            SyncTreeChecks();
+            catch
+            {
+                // сетевой диск / права / временная ошибка
+            }
+
+            _loadedFolders.Add(path);
+
+            // после загрузки детей можно обновить сам узел
+            ApplyNodeVisualStateFromSelection(node);
         }
-        
+        finally
+        {
+            tvFolders.EndUpdate();
+        }
     }
 
     // ===== Sheets UI =====
@@ -783,18 +827,31 @@ public class MainForm : Form
     void OnSheetSelected()
     {
         lbSheetFolders.Items.Clear();
+        _selectedRelPaths.Clear();
+
         var item = lbSheets.SelectedItem as SheetListItem;
-        if (item == null || _repo == null) { _selectedSheetId = -1; return; }
+        if (item == null || _repo == null)
+        {
+            _selectedSheetId = -1;
+            RefreshVisibleTreeStates();
+            return;
+        }
 
         _selectedSheetId = item.Id;
 
-        var sheets = _repo.GetSheetsWithFolders(); // ты реализуешь в CacheRepository
+        var sheets = _repo.GetSheetsWithFolders();
         var sInfo = sheets.Find(x => x.Id == _selectedSheetId);
-        if (sInfo == null) return;
+        if (sInfo == null)
+        {
+            RefreshVisibleTreeStates();
+            return;
+        }
 
         foreach (var f in sInfo.Folders)
-            lbSheetFolders.Items.Add(f.RelPath + (f.IncludeSubfolders ? "  (включая подпапки)" : ""));
-        SyncTreeChecks();
+            _selectedRelPaths.Add(f.RelPath);
+
+        RefreshSheetFoldersOnly();
+        RefreshVisibleTreeStates();
     }
 
     void AddSheet()
@@ -847,7 +904,8 @@ public class MainForm : Form
             MessageBox.Show(this, "ROOT не задан или не существует."); return;
         }
 
-        string abs = tvFolders.SelectedNode.Tag as string;
+        var tag = tvFolders.SelectedNode.Tag as FolderNodeTag;
+        string abs = tag != null ? tag.FullPath : null;
         if (string.IsNullOrWhiteSpace(abs)) return;
 
         string rel = MakeRel(root, abs);
@@ -873,7 +931,6 @@ public class MainForm : Form
 
         _repo.RemoveFolderFromSheet(_selectedSheetId, rel);
         OnSheetSelected();
-        SyncTreeChecks();
     }
 
     static string MakeRel(string root, string abs)
@@ -955,84 +1012,248 @@ public class MainForm : Form
 
     void TvFolders_AfterCheck(object sender, TreeViewEventArgs e)
     {
+        if (_treeInternalUpdate) return;
         if (_repo == null) return;
         if (_selectedSheetId <= 0) return;
-        if (e.Node.Tag == null) return;
+        if (e.Node == null || e.Node.Tag == null) return;
 
-        // чтобы не ловить рекурсивные события
-        tvFolders.AfterCheck -= TvFolders_AfterCheck;
+        var tag = e.Node.Tag as FolderNodeTag;
+        string abs = tag != null ? tag.FullPath : null;
+        if (string.IsNullOrWhiteSpace(abs)) return;
 
+        string root = (tbRoot.Text ?? "").Trim();
+        string rel = MakeRel(root, abs);
+        if (string.IsNullOrWhiteSpace(rel)) return;
+
+        tvFolders.BeginUpdate();
         try
         {
-            string root = tbRoot.Text.Trim();
-            string abs = e.Node.Tag as string;
-
-            string rel = MakeRel(root, abs);
-            if (rel == null) return;
-
             if (e.Node.Checked)
             {
+                // 1) добавить только саму папку
+                _selectedRelPaths.Add(rel);
                 _repo.AddFolderToSheet(_selectedSheetId, rel, true);
+
+                // 2) удалить все выбранные потомки этой папки как избыточные
+                string prefix = rel.EndsWith(Path.DirectorySeparatorChar.ToString())
+                    ? rel
+                    : rel + Path.DirectorySeparatorChar;
+
+                var toRemove = new List<string>();
+                foreach (var p in _selectedRelPaths)
+                {
+                    if (!string.Equals(p, rel, StringComparison.OrdinalIgnoreCase) &&
+                        p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        toRemove.Add(p);
+                    }
+                }
+
+                foreach (var p in toRemove)
+                {
+                    _selectedRelPaths.Remove(p);
+                    _repo.RemoveFolderFromSheet(_selectedSheetId, p);
+                }
             }
             else
             {
+                // снять выбор только с этой папки
+                _selectedRelPaths.Remove(rel);
                 _repo.RemoveFolderFromSheet(_selectedSheetId, rel);
             }
 
-            // применяем состояние к подпапкам
-            SetChildrenChecked(e.Node, e.Node.Checked);
-
-            OnSheetSelected();
-            SyncTreeChecks();
+            RefreshSheetFoldersOnly();
+            RefreshVisibleBranchStates(e.Node);
+            RefreshParentsUp(e.Node.Parent);
         }
         finally
         {
-            tvFolders.AfterCheck += TvFolders_AfterCheck;
+            tvFolders.EndUpdate();
         }
     }
 
-    void SetChildrenChecked(TreeNode node, bool state)
+    void RefreshSheetFoldersOnly()
     {
-        foreach (TreeNode child in node.Nodes)
-        {
-            child.Checked = state;
-            SetChildrenChecked(child, state);
-        }
+        lbSheetFolders.Items.Clear();
+
+        if (_repo == null || _selectedSheetId <= 0)
+            return;
+
+        var items = new List<string>(_selectedRelPaths);
+        items.Sort(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var rel in items)
+            lbSheetFolders.Items.Add(rel + "  (включая подпапки)");
     }
 
-    void SyncTreeChecks()
+
+    FolderCheckState GetNodeStateFromSelection(TreeNode node)
     {
-        if (_repo == null) return;
+        var tag = node.Tag as FolderNodeTag;
+        string abs = tag != null ? tag.FullPath : null;
+        if (string.IsNullOrWhiteSpace(abs))
+            return FolderCheckState.None;
 
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string root = (tbRoot.Text ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(root))
+            return FolderCheckState.None;
 
-        if (_selectedSheetId > 0)
+        string rel = MakeRel(root, abs);
+        if (string.IsNullOrWhiteSpace(rel))
+            return FolderCheckState.None;
+
+        if (_selectedRelPaths.Contains(rel))
+            return FolderCheckState.Full;
+
+        string prefix = rel;
+        if (!prefix.EndsWith(Path.DirectorySeparatorChar.ToString()))
+            prefix += Path.DirectorySeparatorChar;
+
+        foreach (var p in _selectedRelPaths)
         {
-            var sheets = _repo.GetSheetsWithFolders();
-            var sInfo = sheets.Find(x => x.Id == _selectedSheetId);
-
-            if (sInfo != null)
-                foreach (var f in sInfo.Folders)
-                    set.Add(f.RelPath);
+            if (p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return FolderCheckState.Partial;
         }
 
-        SyncNode(tvFolders.Nodes, set);
+        return FolderCheckState.None;
     }
 
-    void SyncNode(TreeNodeCollection nodes, HashSet<string> set)
+    void ApplyNodeVisualStateFromSelection(TreeNode node)
+    {
+        if (node == null || node.Text == "...") return;
+
+        var tag = node.Tag as FolderNodeTag;
+        string baseText = tag != null ? tag.BaseText : node.Text;
+        string abs = tag != null ? tag.FullPath : null;
+
+        string rel = string.IsNullOrWhiteSpace(abs) ? null : MakeRel(tbRoot.Text.Trim(), abs);
+
+        bool selfSelected = !string.IsNullOrWhiteSpace(rel) && _selectedRelPaths.Contains(rel);
+        bool inheritedSelected = !selfSelected && !string.IsNullOrWhiteSpace(rel) && IsRelPathSelected(rel);
+
+        bool hasDirectSelectedDescendant = false;
+        if (!string.IsNullOrWhiteSpace(rel))
+        {
+            string prefix = rel.EndsWith(Path.DirectorySeparatorChar.ToString())
+                ? rel
+                : rel + Path.DirectorySeparatorChar;
+
+            foreach (var p in _selectedRelPaths)
+            {
+                if (!string.IsNullOrWhiteSpace(p) &&
+                    p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    hasDirectSelectedDescendant = true;
+                    break;
+                }
+            }
+        }
+
+        bool targetChecked = selfSelected || inheritedSelected;
+        string targetText = hasDirectSelectedDescendant && !selfSelected && !inheritedSelected
+            ? "◩ " + baseText
+            : baseText;
+
+        _treeInternalUpdate = true;
+        try
+        {
+            if (node.Checked != targetChecked)
+                node.Checked = targetChecked;
+
+            if (!string.Equals(node.Text, targetText, StringComparison.Ordinal))
+                node.Text = targetText;
+        }
+        finally
+        {
+            _treeInternalUpdate = false;
+        }
+    }
+
+    void RefreshVisibleTreeStates()
+    {
+        if (tvFolders == null) return;
+
+        tvFolders.BeginUpdate();
+        try
+        {
+            RefreshVisibleTreeStates(tvFolders.Nodes);
+        }
+        finally
+        {
+            tvFolders.EndUpdate();
+        }
+    }
+
+    void RefreshVisibleTreeStates(TreeNodeCollection nodes)
     {
         foreach (TreeNode node in nodes)
         {
-            string abs = node.Tag as string;
+            if (node.Text == "...") continue;
 
-            if (!string.IsNullOrEmpty(abs))
-            {
-                string rel = MakeRel(tbRoot.Text.Trim(), abs);
-                node.Checked = rel != null && set.Contains(rel);
-            }
+            ApplyNodeVisualStateFromSelection(node);
 
             if (node.Nodes.Count > 0)
-                SyncNode(node.Nodes, set);
+                RefreshVisibleTreeStates(node.Nodes);
+        }
+    }
+    void RefreshParentsUp(TreeNode node)
+    {
+        while (node != null)
+        {
+            ApplyNodeVisualStateFromSelection(node);
+            node = node.Parent;
+        }
+    }
+
+    bool IsPathSelected(string relPath)
+    {
+        if (_selectedRelPaths.Contains(relPath))
+            return true;
+
+        foreach (var p in _selectedRelPaths)
+        {
+            string prefix = p.EndsWith("\\") ? p : p + "\\";
+            if (relPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    bool IsRelPathSelected(string relPath)
+    {
+        if (string.IsNullOrWhiteSpace(relPath))
+            return false;
+
+        if (_selectedRelPaths.Contains(relPath))
+            return true;
+
+        foreach (var p in _selectedRelPaths)
+        {
+            if (string.IsNullOrWhiteSpace(p))
+                continue;
+
+            string prefix = p.EndsWith(Path.DirectorySeparatorChar.ToString())
+                ? p
+                : p + Path.DirectorySeparatorChar;
+
+            if (relPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    void RefreshVisibleBranchStates(TreeNode node)
+    {
+        if (node == null) return;
+
+        ApplyNodeVisualStateFromSelection(node);
+
+        foreach (TreeNode child in node.Nodes)
+        {
+            if (child.Text == "...") continue;
+            RefreshVisibleBranchStates(child);
         }
     }
 }
