@@ -776,8 +776,7 @@ public class MainForm : Form
 
                     try
                     {
-                        if (Directory.GetDirectories(dir).Length > 0)
-                            child.Nodes.Add(new TreeNode("..."));
+                        child.Nodes.Add(new TreeNode("..."));
                     }
                     catch { }
 
@@ -850,6 +849,7 @@ public class MainForm : Form
         foreach (var f in sInfo.Folders)
             _selectedRelPaths.Add(f.RelPath);
 
+        CompactSelectedPaths();
         RefreshSheetFoldersOnly();
         RefreshVisibleTreeStates();
     }
@@ -914,8 +914,13 @@ public class MainForm : Form
             MessageBox.Show(this, "Папка не принадлежит ROOT."); return;
         }
 
+        _selectedRelPaths.Add(rel);
+        CompactSelectedPaths();
+
         _repo.AddFolderToSheet(_selectedSheetId, rel, includeSubfolders: true);
-        OnSheetSelected();
+
+        RefreshSheetFoldersOnly();
+        RefreshVisibleTreeStates();
     }
 
     void RemoveSelectedFolderFromSheet()
@@ -1057,9 +1062,25 @@ public class MainForm : Form
             }
             else
             {
-                // снять выбор только с этой папки
                 _selectedRelPaths.Remove(rel);
                 _repo.RemoveFolderFromSheet(_selectedSheetId, rel);
+
+                string prefix = rel.EndsWith(Path.DirectorySeparatorChar.ToString())
+                    ? rel
+                    : rel + Path.DirectorySeparatorChar;
+
+                var toRemove = new List<string>();
+                foreach (var p in _selectedRelPaths)
+                {
+                    if (p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                        toRemove.Add(p);
+                }
+
+                foreach (var p in toRemove)
+                {
+                    _selectedRelPaths.Remove(p);
+                    _repo.RemoveFolderFromSheet(_selectedSheetId, p);
+                }
             }
 
             RefreshSheetFoldersOnly();
@@ -1125,34 +1146,23 @@ public class MainForm : Form
         var tag = node.Tag as FolderNodeTag;
         string baseText = tag != null ? tag.BaseText : node.Text;
         string abs = tag != null ? tag.FullPath : null;
-
         string rel = string.IsNullOrWhiteSpace(abs) ? null : MakeRel(tbRoot.Text.Trim(), abs);
 
         bool selfSelected = !string.IsNullOrWhiteSpace(rel) && _selectedRelPaths.Contains(rel);
         bool inheritedSelected = !selfSelected && !string.IsNullOrWhiteSpace(rel) && IsRelPathSelected(rel);
+        bool hasSelectedDescendant = !string.IsNullOrWhiteSpace(rel) && HasSelectedDescendant(rel);
 
-        bool hasDirectSelectedDescendant = false;
-        if (!string.IsNullOrWhiteSpace(rel))
-        {
-            string prefix = rel.EndsWith(Path.DirectorySeparatorChar.ToString())
-                ? rel
-                : rel + Path.DirectorySeparatorChar;
+        bool allLoadedChildrenSelected = AllLoadedChildrenSelected(node);
 
-            foreach (var p in _selectedRelPaths)
-            {
-                if (!string.IsNullOrWhiteSpace(p) &&
-                    p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                {
-                    hasDirectSelectedDescendant = true;
-                    break;
-                }
-            }
-        }
+        bool targetChecked =
+            selfSelected ||
+            inheritedSelected ||
+            allLoadedChildrenSelected;
 
-        bool targetChecked = selfSelected || inheritedSelected;
-        string targetText = hasDirectSelectedDescendant && !selfSelected && !inheritedSelected
-            ? "◩ " + baseText
-            : baseText;
+        string targetText =
+            (!targetChecked && hasSelectedDescendant)
+                ? "◩ " + baseText
+                : baseText;
 
         _treeInternalUpdate = true;
         try
@@ -1205,21 +1215,6 @@ public class MainForm : Form
         }
     }
 
-    bool IsPathSelected(string relPath)
-    {
-        if (_selectedRelPaths.Contains(relPath))
-            return true;
-
-        foreach (var p in _selectedRelPaths)
-        {
-            string prefix = p.EndsWith("\\") ? p : p + "\\";
-            if (relPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-
-        return false;
-    }
-
     bool IsRelPathSelected(string relPath)
     {
         if (string.IsNullOrWhiteSpace(relPath))
@@ -1256,4 +1251,78 @@ public class MainForm : Form
             RefreshVisibleBranchStates(child);
         }
     }
+
+    void CompactSelectedPaths()
+    {
+        var items = new List<string>(_selectedRelPaths);
+        items.Sort(StringComparer.OrdinalIgnoreCase);
+
+        var compact = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var path in items)
+        {
+            bool coveredByParent = false;
+
+            foreach (var selected in compact)
+            {
+                string prefix = selected.EndsWith(Path.DirectorySeparatorChar.ToString())
+                    ? selected
+                    : selected + Path.DirectorySeparatorChar;
+
+                if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    coveredByParent = true;
+                    break;
+                }
+            }
+
+            if (!coveredByParent)
+                compact.Add(path);
+        }
+
+        _selectedRelPaths = compact;
+    }
+
+    bool HasSelectedDescendant(string rel)
+    {
+        if (string.IsNullOrWhiteSpace(rel)) return false;
+
+        string prefix = rel.EndsWith(Path.DirectorySeparatorChar.ToString())
+            ? rel
+            : rel + Path.DirectorySeparatorChar;
+
+        foreach (var p in _selectedRelPaths)
+        {
+            if (!string.IsNullOrWhiteSpace(p) &&
+                p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    bool AllLoadedChildrenSelected(TreeNode node)
+    {
+        int realChildren = 0;
+
+        foreach (TreeNode child in node.Nodes)
+        {
+            if (child.Text == "...") continue;
+
+            realChildren++;
+
+            var tag = child.Tag as FolderNodeTag;
+            string abs = tag != null ? tag.FullPath : null;
+            string rel = string.IsNullOrWhiteSpace(abs) ? null : MakeRel(tbRoot.Text.Trim(), abs);
+
+            if (string.IsNullOrWhiteSpace(rel))
+                return false;
+
+            if (!IsRelPathSelected(rel) && !AllLoadedChildrenSelected(child))
+                return false;
+        }
+
+        return realChildren > 0;
+    }
 }
+
