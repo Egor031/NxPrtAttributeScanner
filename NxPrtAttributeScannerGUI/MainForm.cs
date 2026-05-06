@@ -194,11 +194,11 @@ public class MainForm : Form
 
         tvFolders.BeforeExpand += (s, e) => ExpandFolderNode(e.Node);
         tvFolders.AfterCheck += TvFolders_AfterCheck;
-        tvFolders.NodeMouseDoubleClick += (s, e) =>
-        {
-            if (e.Node != null)
-                AddSelectedFolderToSelectedSheet();
-        };
+        //tvFolders.NodeMouseDoubleClick += (s, e) =>
+        //{
+        //    if (e.Node != null)
+        //        AddSelectedFolderToSelectedSheet();
+        //};
         splitFolders.Panel1.Controls.Add(tvFolders);
 
         var right = new TableLayoutPanel
@@ -1065,12 +1065,29 @@ public class MainForm : Form
                     _selectedRelPaths.Remove(p);
                     _repo.RemoveFolderFromSheet(_selectedSheetId, p);
                 }
+                //TryCompactParentSelection(e.Node);
             }
             else
             {
-                _selectedRelPaths.Remove(rel);
-                _repo.RemoveFolderFromSheet(_selectedSheetId, rel);
+                // 1) Если папка была выбрана напрямую — удаляем её
+                if (_selectedRelPaths.Contains(rel))
+                {
+                    _selectedRelPaths.Remove(rel);
+                    _repo.RemoveFolderFromSheet(_selectedSheetId, rel);
+                }
+                else
+                {
+                    // 2) Иначе она могла быть выбрана через выбранного родителя
+                    string selectedAncestor = FindSelectedAncestorRel(rel);
 
+                    if (!string.IsNullOrWhiteSpace(selectedAncestor))
+                    {
+                        _selectedRelPaths.Remove(selectedAncestor);
+                        _repo.RemoveFolderFromSheet(_selectedSheetId, selectedAncestor);
+                    }
+                }
+
+                // 3) На всякий случай удаляем все выбранные подпапки внутри этой папки
                 string prefix = rel.EndsWith(Path.DirectorySeparatorChar.ToString())
                     ? rel
                     : rel + Path.DirectorySeparatorChar;
@@ -1329,6 +1346,81 @@ public class MainForm : Form
         }
 
         return realChildren > 0;
+    }
+    void TryCompactParentSelection(TreeNode node)
+    {
+        if (node == null || node.Parent == null) return;
+        if (_repo == null || _selectedSheetId <= 0) return;
+
+        TreeNode parent = node.Parent;
+
+        var parentTag = parent.Tag as FolderNodeTag;
+        if (parentTag == null || string.IsNullOrWhiteSpace(parentTag.FullPath)) return;
+
+        string root = (tbRoot.Text ?? "").Trim();
+        string parentRel = MakeRel(root, parentTag.FullPath);
+        if (string.IsNullOrWhiteSpace(parentRel)) return;
+
+        var childRels = new List<string>();
+
+        foreach (TreeNode child in parent.Nodes)
+        {
+            if (child.Text == "...") continue;
+
+            var childTag = child.Tag as FolderNodeTag;
+            if (childTag == null || string.IsNullOrWhiteSpace(childTag.FullPath))
+                return;
+
+            string childRel = MakeRel(root, childTag.FullPath);
+            if (string.IsNullOrWhiteSpace(childRel))
+                return;
+
+            childRels.Add(childRel);
+
+            if (!IsRelPathSelected(childRel))
+                return;
+        }
+
+        if (childRels.Count == 0) return;
+
+        // Все видимые дети выбраны — заменяем их на родителя
+        foreach (var rel in childRels)
+        {
+            _selectedRelPaths.Remove(rel);
+            _repo.RemoveFolderFromSheet(_selectedSheetId, rel);
+        }
+
+        _selectedRelPaths.Add(parentRel);
+        _repo.AddFolderToSheet(_selectedSheetId, parentRel, true);
+
+        RefreshVisibleBranchStates(parent);
+        RefreshParentsUp(parent.Parent);
+    }
+
+    string FindSelectedAncestorRel(string rel)
+    {
+        if (string.IsNullOrWhiteSpace(rel))
+            return null;
+
+        string best = null;
+
+        foreach (var selected in _selectedRelPaths)
+        {
+            if (string.IsNullOrWhiteSpace(selected))
+                continue;
+
+            string prefix = selected.EndsWith(Path.DirectorySeparatorChar.ToString())
+                ? selected
+                : selected + Path.DirectorySeparatorChar;
+
+            if (rel.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                if (best == null || selected.Length > best.Length)
+                    best = selected;
+            }
+        }
+
+        return best;
     }
 }
 
