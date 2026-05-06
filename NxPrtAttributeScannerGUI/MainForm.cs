@@ -63,7 +63,8 @@ public class MainForm : Form
     {
         Text = "Сканер атрибутов NX PRT → Excel";
         Width = 980;
-        Height = 720;
+        Height = 760;
+        MinimumSize = new System.Drawing.Size(980, 720);
         StartPosition = FormStartPosition.CenterScreen;
 
         InitializeUi();
@@ -305,18 +306,23 @@ public class MainForm : Form
         // ===== ВСЕ настройки MinSize и SplitterDistance делаем ТОЛЬКО после появления размеров =====
         Load += (s, e) =>
         {
-            // 1) главный split (верх/низ)
-            split.Panel1MinSize = 260;
+            // Верхней панели нужно больше места, потому что там:
+            // пути, база, режим, дерево, фильтры, кнопки
+            split.Panel1MinSize = 520;
             split.Panel2MinSize = 150;
-            SetSplitterDistanceSafe(split, Math.Max(split.Panel1MinSize, (int)(split.Height * 0.35)));
 
-            // 2) внутренний split (лево/право)
+            SetSplitterDistanceSafe(split, 540);
+
             splitFolders.Panel1MinSize = 220;
             splitFolders.Panel2MinSize = 260;
             SetSplitterDistanceSafeVertical(splitFolders, splitFolders.Width / 2);
         };
 
-        split.SizeChanged += (s, e) => SetSplitterDistanceSafe(split, split.SplitterDistance);
+        split.SizeChanged += (s, e) =>
+        {
+            if (split.SplitterDistance < split.Panel1MinSize)
+                SetSplitterDistanceSafe(split, split.Panel1MinSize);
+        };
         splitFolders.SizeChanged += (s, e) => SetSplitterDistanceSafeVertical(splitFolders, splitFolders.SplitterDistance);
     }
 
