@@ -35,8 +35,7 @@ public class MainForm : Form
     SplitContainer splitFolders;    // внутри верхней панели
     TreeView tvFolders;
 
-    ListBox lbSheets;
-    ListBox lbSheetFolders;
+    TreeView tvSheets;
 
     Button btnSheetAdd;
     Button btnSheetRename;
@@ -63,8 +62,8 @@ public class MainForm : Form
     {
         Text = "Сканер атрибутов NX PRT → Excel";
         Width = 980;
-        Height = 760;
-        MinimumSize = new System.Drawing.Size(980, 720);
+        Height = 800;
+        MinimumSize = new System.Drawing.Size(980, 760);
         StartPosition = FormStartPosition.CenterScreen;
 
         InitializeUi();
@@ -126,9 +125,11 @@ public class MainForm : Form
 
         // ===== ROOT =====
         tbRoot = new TextBox { Dock = DockStyle.Fill };
-        btnPickRoot = new Button { Text = "Выбрать…", AutoSize = true };
-        btnPickRoot.Click += (s, e) => PickRootFolder();
-        AddRow(grid, "Корневая папка (Root):", tbRoot, btnPickRoot);
+        //btnPickRoot = new Button { Text = "Выбрать…", AutoSize = true };
+        //btnPickRoot.Click += (s, e) => PickRootFolder();
+        //AddRow(grid, "Корневая папка (Root):", tbRoot, btnPickRoot);
+        tbRoot = new TextBox { Dock = DockStyle.Fill, ReadOnly = true };
+        AddRow(grid, "Корневая папка (Root):", tbRoot, null);
 
         // ===== DB =====
         tbDbPath = new TextBox { Dock = DockStyle.Fill };
@@ -186,6 +187,8 @@ public class MainForm : Form
             // НЕ ставим Panel1MinSize/Panel2MinSize здесь
         };
 
+        splitFolders.MinimumSize = new System.Drawing.Size(0, 230);
+
         tvFolders = new TreeView
         {
             Dock = DockStyle.Fill,
@@ -213,12 +216,20 @@ public class MainForm : Form
         right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         splitFolders.Panel2.Controls.Add(right);
 
-        lbSheets = new ListBox { Dock = DockStyle.Fill };
-        lbSheets.SelectedIndexChanged += (s, e) => OnSheetSelected();
-        right.Controls.Add(lbSheets, 0, 0);
+        tvSheets = new TreeView
+        {
+            Dock = DockStyle.Fill,
+            HideSelection = false
+        };
 
-        lbSheetFolders = new ListBox { Dock = DockStyle.Fill };
-        right.Controls.Add(lbSheetFolders, 1, 0);
+        tvSheets.AfterSelect += (s, e) =>
+        {
+            if (e.Node != null && e.Node.Tag is SheetListItem)
+                OnSheetSelected();
+        };
+
+        right.Controls.Add(tvSheets, 0, 0);
+        right.SetColumnSpan(tvSheets, 2);
 
         var sheetBtns = new FlowLayoutPanel
         {
@@ -226,7 +237,8 @@ public class MainForm : Form
             AutoSize = true,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = true,
-            Padding = new Padding(0, 6, 0, 0)
+            Padding = new Padding(0, 4, 0, 0),
+            Height = 64
         };
 
         btnSheetAdd = new Button { Text = "Создать лист", AutoSize = true };
@@ -264,9 +276,10 @@ public class MainForm : Form
             Dock = DockStyle.Fill,
             Multiline = true,
             ScrollBars = ScrollBars.Vertical,
-            MinimumSize = new System.Drawing.Size(0, 70)
+            Height = 50
         };
-        AddRow(grid, "", tbFilters, null, makeRowFill: true);
+
+        AddRow(grid, "", tbFilters, null);
 
         // ===== Кнопки снизу =====
         var bottomBar = new TableLayoutPanel
@@ -308,13 +321,15 @@ public class MainForm : Form
         {
             // Верхней панели нужно больше места, потому что там:
             // пути, база, режим, дерево, фильтры, кнопки
-            split.Panel1MinSize = 520;
-            split.Panel2MinSize = 150;
+            split.Panel1MinSize = 600;
+            split.Panel2MinSize = 90;
 
-            SetSplitterDistanceSafe(split, 540);
+            SetSplitterDistanceSafe(split, 620);
 
-            splitFolders.Panel1MinSize = 220;
-            splitFolders.Panel2MinSize = 260;
+
+
+            splitFolders.Panel1MinSize = 420;
+            splitFolders.Panel2MinSize = 320;
             SetSplitterDistanceSafeVertical(splitFolders, splitFolders.Width / 2);
         };
 
@@ -638,8 +653,8 @@ public class MainForm : Form
         grid.Controls.Add(input, 1, row);
 
         // если кнопки нет — растянем input на 2 колонки (input + пустая)
-        if (button == null)
-            grid.SetColumnSpan(input, 2);
+        //if (button == null)
+        //    grid.SetColumnSpan(input, 2);
 
         if (button != null)
         {
@@ -668,11 +683,19 @@ public class MainForm : Form
 
     void CreateDbFromRoot()
     {
-        string root = (tbRoot.Text ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+        string root;
+
+        using (var folderDlg = new FolderBrowserDialog())
         {
-            MessageBox.Show(this, "Сначала выберите существующую ROOT папку.", "ROOT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
+            folderDlg.Description = "Выберите корневую папку, где искать *.prt";
+
+            if (!string.IsNullOrWhiteSpace(tbRoot.Text) && Directory.Exists(tbRoot.Text))
+                folderDlg.SelectedPath = tbRoot.Text;
+
+            if (folderDlg.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            root = folderDlg.SelectedPath;
         }
 
         using (var dlg = new SaveFileDialog())
@@ -682,15 +705,21 @@ public class MainForm : Form
             dlg.FileName = Path.GetFileName(root.TrimEnd('\\', '/')) + ".db";
             dlg.InitialDirectory = AppDomain.CurrentDomain.BaseDirectory;
 
-            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            if (dlg.ShowDialog(this) != DialogResult.OK)
+                return;
 
             OpenDb(dlg.FileName);
             tbDbPath.Text = dlg.FileName;
+            tbRoot.Text = root;
 
-            // сохраняем root в meta
             try { _repo.SetRootPath(root); } catch { }
+
             _rootFromDb = root;
+            _selectedRelPaths.Clear();
+            _loadedFolders.Clear();
+
             LoadRootTree(root);
+            RefreshSheets();
         }
     }
 
@@ -818,24 +847,53 @@ public class MainForm : Form
 
     void RefreshSheets()
     {
-        lbSheets.Items.Clear();
-        lbSheetFolders.Items.Clear();
+        tvSheets.Nodes.Clear();
         _selectedSheetId = -1;
+        _selectedRelPaths.Clear();
 
         if (_repo == null) return;
 
-        var sheets = _repo.ListSheets(); // ты реализуешь в CacheRepository
+        var sheets = _repo.GetSheetsWithFolders();
+
         foreach (var sh in sheets)
-            lbSheets.Items.Add(new SheetListItem(sh.Id, sh.Name));
+        {
+            var sheetItem = new SheetListItem(sh.Id, sh.Name);
+
+            var sheetNode = new TreeNode(sh.Name)
+            {
+                Tag = sheetItem
+            };
+
+            foreach (var f in sh.Folders)
+            {
+                sheetNode.Nodes.Add(new TreeNode(f.RelPath + (f.IncludeSubfolders ? "  (включая подпапки)" : "")));
+            }
+
+            tvSheets.Nodes.Add(sheetNode);
+        }
     }
 
     void OnSheetSelected()
     {
-        lbSheetFolders.Items.Clear();
         _selectedRelPaths.Clear();
 
-        var item = lbSheets.SelectedItem as SheetListItem;
-        if (item == null || _repo == null)
+        if (tvSheets.SelectedNode == null || _repo == null)
+        {
+            _selectedSheetId = -1;
+            RefreshVisibleTreeStates();
+            return;
+        }
+
+        var item = tvSheets.SelectedNode.Tag as SheetListItem;
+
+        // Если выбрали не сам лист, а папку внутри листа — поднимаемся к родителю
+        if (item == null && tvSheets.SelectedNode.Parent != null)
+        {
+            tvSheets.SelectedNode = tvSheets.SelectedNode.Parent;
+            return;
+        }
+
+        if (item == null)
         {
             _selectedSheetId = -1;
             RefreshVisibleTreeStates();
@@ -846,17 +904,13 @@ public class MainForm : Form
 
         var sheets = _repo.GetSheetsWithFolders();
         var sInfo = sheets.Find(x => x.Id == _selectedSheetId);
-        if (sInfo == null)
+
+        if (sInfo != null)
         {
-            RefreshVisibleTreeStates();
-            return;
+            foreach (var f in sInfo.Folders)
+                _selectedRelPaths.Add(f.RelPath);
         }
 
-        foreach (var f in sInfo.Folders)
-            _selectedRelPaths.Add(f.RelPath);
-
-        CompactSelectedPaths();
-        RefreshSheetFoldersOnly();
         RefreshVisibleTreeStates();
     }
 
@@ -873,7 +927,7 @@ public class MainForm : Form
     void RenameSheet()
     {
         if (_repo == null) return;
-        var item = lbSheets.SelectedItem as SheetListItem;
+        var item = tvSheets.SelectedNode != null ? tvSheets.SelectedNode.Tag as SheetListItem : null;
         if (item == null) return;
 
         string name = Prompt("Новое название листа:", item.Name);
@@ -886,7 +940,7 @@ public class MainForm : Form
     void DeleteSheet()
     {
         if (_repo == null) return;
-        var item = lbSheets.SelectedItem as SheetListItem;
+        var item = tvSheets.SelectedNode != null ? tvSheets.SelectedNode.Tag as SheetListItem : null;
         if (item == null) return;
 
         var ok = MessageBox.Show(this, $"Удалить лист \"{item.Name}\"?", "Подтверждение",
@@ -933,15 +987,31 @@ public class MainForm : Form
     {
         if (_repo == null) return;
         if (_selectedSheetId <= 0) return;
-        if (lbSheetFolders.SelectedItem == null) return;
+        if (tvSheets == null || tvSheets.SelectedNode == null) return;
 
-        string s = lbSheetFolders.SelectedItem.ToString();
+        TreeNode node = tvSheets.SelectedNode;
+
+        // Удалять можно только папку внутри листа, не сам лист
+        if (node.Tag is SheetListItem)
+        {
+            MessageBox.Show(this, "Выберите папку внутри листа, которую нужно убрать.");
+            return;
+        }
+
+        if (node.Parent == null || !(node.Parent.Tag is SheetListItem))
+            return;
+
+        string s = node.Text;
         string rel = s;
         int idx = s.IndexOf("  (", StringComparison.Ordinal);
-        if (idx > 0) rel = s.Substring(0, idx);
+        if (idx > 0)
+            rel = s.Substring(0, idx);
 
         _repo.RemoveFolderFromSheet(_selectedSheetId, rel);
-        OnSheetSelected();
+        _selectedRelPaths.Remove(rel);
+
+        RefreshSheetFoldersOnly();
+        RefreshVisibleTreeStates();
     }
 
     static string MakeRel(string root, string abs)
@@ -1118,16 +1188,26 @@ public class MainForm : Form
 
     void RefreshSheetFoldersOnly()
     {
-        lbSheetFolders.Items.Clear();
-
-        if (_repo == null || _selectedSheetId <= 0)
+        if (tvSheets.SelectedNode == null)
             return;
+
+        TreeNode sheetNode = tvSheets.SelectedNode;
+
+        if (!(sheetNode.Tag is SheetListItem) && sheetNode.Parent != null)
+            sheetNode = sheetNode.Parent;
+
+        if (!(sheetNode.Tag is SheetListItem))
+            return;
+
+        sheetNode.Nodes.Clear();
 
         var items = new List<string>(_selectedRelPaths);
         items.Sort(StringComparer.OrdinalIgnoreCase);
 
         foreach (var rel in items)
-            lbSheetFolders.Items.Add(rel + "  (включая подпапки)");
+            sheetNode.Nodes.Add(new TreeNode(rel + "  (включая подпапки)"));
+
+        sheetNode.Expand();
     }
 
 
